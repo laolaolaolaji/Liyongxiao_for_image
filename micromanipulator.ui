@@ -111,7 +111,7 @@
         <x>570</x>
         <y>0</y>
         <width>371</width>
-        <height>191</height>
+        <height>230</height>
        </rect>
       </property>
       <property name="title">
@@ -301,7 +301,7 @@
          <x>0</x>
          <y>80</y>
          <width>361</width>
-         <height>101</height>
+         <height>141</height>
         </rect>
        </property>
        <layout class="QGridLayout" name="gridLayoutMicroJog" rowstretch="0,0,0,0" columnstretch="1,1,1">

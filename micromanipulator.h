@@ -488,7 +488,7 @@ private:
     std::vector<cv::Vec3i> m_microSnakePath; ///< 蛇形扫描轨迹序列。
     int m_microSnakeIndex = 0;         ///< 蛇形扫描当前步序号。
     bool m_microSnakeRunning = false;  ///< 蛇形扫描运行标记。
-    int m_microSnakeIntervalMs = 300;  ///< 蛇形扫描发送间隔（毫秒）。
+    int m_microSnakeIntervalMs = 1000;  ///< 蛇形扫描发送间隔（毫秒）。
 
     // ====== 图像处理线程内的缓冲资源，避免每帧重复构造 ======
     cv::Mat m_cachedUndistortMap1;       ///< 上一次生成的去畸变映射表（x/y）。

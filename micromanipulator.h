@@ -181,6 +181,7 @@ private slots:
     void on_Btn_EyeHandCalibration_solute_clicked();
 
     void on_BtnRecordTipError_clicked();
+    void on_BtnMicroSnakeScan_clicked();
 
 public:
     //相机相关
@@ -483,6 +484,12 @@ private:
     qint64 m_gradientLogStartMs = 0;   ///< 梯度能量记录开始时间（毫秒）。
     qint64 m_gradientLogFrameIndex = 0; ///< 梯度能量记录帧计数。
 
+    QTimer m_microSnakeTimer;          ///< 微动关节蛇形扫描定时器。
+    std::vector<cv::Vec3i> m_microSnakePath; ///< 蛇形扫描轨迹序列。
+    int m_microSnakeIndex = 0;         ///< 蛇形扫描当前步序号。
+    bool m_microSnakeRunning = false;  ///< 蛇形扫描运行标记。
+    int m_microSnakeIntervalMs = 300;  ///< 蛇形扫描发送间隔（毫秒）。
+
     // ====== 图像处理线程内的缓冲资源，避免每帧重复构造 ======
     cv::Mat m_cachedUndistortMap1;       ///< 上一次生成的去畸变映射表（x/y）。
     cv::Mat m_cachedUndistortMap2;       ///< 上一次生成的去畸变映射表（像素索引）。
@@ -497,6 +504,8 @@ private:
     void startMicroJog(const QPoint &direction);
     void stopMicroJog();
     void triggerMicroJogStep();
+    void stopMicroSnakeScan();
+    void handleMicroSnakeScanStep();
     void startTipErrorRecording(const QString &filePath);
     void stopTipErrorRecording();
     void writeTipErrorSample(const ImageProcessor::ProcessedImage &result);

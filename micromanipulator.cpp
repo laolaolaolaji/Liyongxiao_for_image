@@ -268,6 +268,10 @@ Micromanipulator::Micromanipulator(QWidget *parent)
     bindMicroJogButton(ui->BtnMicroJogDown, QPoint(0, 1));
     bindMicroJogButton(ui->BtnMicroJogLeft, QPoint(1, 0));
     bindMicroJogButton(ui->BtnMicroJogRight, QPoint(-1, 0));
+    ui->BtnMicroSnakeScan->setEnabled(false);
+    m_microSnakeTimer.setInterval(m_microSnakeIntervalMs);
+    m_microSnakeTimer.setSingleShot(false);
+    connect(&m_microSnakeTimer, &QTimer::timeout, this, &Micromanipulator::handleMicroSnakeScanStep);
 
     ui->BtnMicroJogUp->setEnabled(false);
     ui->BtnMicroJogDown->setEnabled(false);
@@ -341,6 +345,45 @@ void Micromanipulator::triggerMicroJogStep()
     mic_Z = pose[2];
 }
 
+void Micromanipulator::stopMicroSnakeScan()
+{
+    if (!m_microSnakeRunning) {
+        return;
+    }
+
+    m_microSnakeTimer.stop();
+    m_microSnakeRunning = false;
+    m_microSnakeIndex = 0;
+    m_microSnakePath.clear();
+    ui->BtnMicroSnakeScan->setText(QStringLiteral("蛇形扫描"));
+}
+
+void Micromanipulator::handleMicroSnakeScanStep()
+{
+    if (!m_microSnakeRunning || !mIsOpen) {
+        stopMicroSnakeScan();
+        return;
+    }
+
+    if (m_microSnakeIndex >= static_cast<int>(m_microSnakePath.size())) {
+        stopMicroSnakeScan();
+        ui->FeedBack->append(tr("蛇形扫描已完成"));
+        return;
+    }
+
+    const cv::Vec3i target = m_microSnakePath[m_microSnakeIndex];
+    if (!m_microArmModule.moveToPose(target[0], target[1], target[2])) {
+        ui->FeedBack->append(tr("蛇形扫描移动失败，已停止。"));
+        stopMicroSnakeScan();
+        return;
+    }
+
+    mic_X = target[0];
+    mic_Y = target[1];
+    mic_Z = target[2];
+    ++m_microSnakeIndex;
+}
+
 void Micromanipulator::closeEvent(QCloseEvent *event)
 {
     if (timer1 && timer1->isActive()) {
@@ -352,6 +395,7 @@ void Micromanipulator::closeEvent(QCloseEvent *event)
     }
 
     stopRecording();
+    stopMicroSnakeScan();
     // saveTipLogToCsv();
 
     m_imageProcessorModule.requestStop();
@@ -649,6 +693,55 @@ void Micromanipulator::on_BtnRecordTipError_clicked()
         ui->BtnRecordTipError->setText(QStringLiteral("停止记录误差"));
         ui->FeedBack->setText(tr("误差记录中：%1").arg(m_tipErrorFilePath));
     }
+}
+
+void Micromanipulator::on_BtnMicroSnakeScan_clicked()
+{
+    if (!mIsOpen) {
+        QMessageBox::warning(this, tr("提示"), tr("请先打开微动关节串口后再启动蛇形扫描。"));
+        return;
+    }
+
+    if (m_microSnakeRunning) {
+        stopMicroSnakeScan();
+        ui->FeedBack->append(tr("蛇形扫描已停止"));
+        return;
+    }
+
+    constexpr int kXStart = 0;
+    constexpr int kXEnd = -300000;
+    constexpr int kXStep = -50000;
+    constexpr int kYStart = -200000;
+    constexpr int kYEnd = 200000;
+    constexpr int kYStep = 50000;
+    constexpr int kZFixed = 0;
+
+    m_microSnakePath.clear();
+    int xIndex = 0;
+    for (int x = kXStart; x >= kXEnd; x += kXStep) {
+        if (xIndex % 2 == 0) {
+            for (int y = kYStart; y <= kYEnd; y += kYStep) {
+                m_microSnakePath.emplace_back(x, y, kZFixed);
+            }
+        } else {
+            for (int y = kYEnd; y >= kYStart; y -= kYStep) {
+                m_microSnakePath.emplace_back(x, y, kZFixed);
+            }
+        }
+        ++xIndex;
+    }
+
+    if (m_microSnakePath.empty()) {
+        ui->FeedBack->append(tr("蛇形扫描路径为空，未启动。"));
+        return;
+    }
+
+    m_microSnakeIndex = 0;
+    m_microSnakeRunning = true;
+    ui->BtnMicroSnakeScan->setText(QStringLiteral("停止扫描"));
+    ui->FeedBack->append(tr("蛇形扫描开始，共 %1 步").arg(m_microSnakePath.size()));
+    handleMicroSnakeScanStep();
+    m_microSnakeTimer.start();
 }
 
 void Micromanipulator::handleCameraOpened()
@@ -1871,8 +1964,10 @@ void Micromanipulator::on_BtnSerialPortOnOff_clicked()
         ui->BtnMicroJogLeft->setEnabled(enabled);
         ui->BtnMicroJogRight->setEnabled(enabled);
         ui->spinBoxMicroJogStep->setEnabled(enabled);
+        ui->BtnMicroSnakeScan->setEnabled(enabled);
         if (!enabled) {
             stopMicroJog();
+            stopMicroSnakeScan();
         }
     };
 

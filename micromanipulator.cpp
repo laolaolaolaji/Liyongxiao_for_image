@@ -13,6 +13,7 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QMutexLocker>
 #include <QTextStream>
 #include <QDateTime>
 #include <QFileDialog>
@@ -1075,6 +1076,11 @@ ImageProcessor::ProcessedImage Micromanipulator::runImageProcessingPipeline(cons
     }
     m_clahe->apply(gray, claheGray);
 
+    {
+        const cv::Mat grayMat = gray.getMat(cv::ACCESS_READ);
+        recordGradientEnergy(grayMat);
+    }
+
     cv::UMat binaryImageGpu;
     cv::threshold(claheGray, binaryImageGpu, 180, 255, cv::THRESH_BINARY);
     cv::medianBlur(binaryImageGpu, binaryImageGpu, 5);
@@ -1725,8 +1731,9 @@ bool Micromanipulator::startRecording(const cv::Size &frameSize, double fps)
         targetDir.mkpath(".");
     }
 
+    const QString sessionStamp = QDateTime::currentDateTime().toString("yyyyMMdd_HHmmss");
     const QString filename = QStringLiteral("camera_record_%1.avi")
-                                 .arg(QDateTime::currentDateTime().toString("yyyyMMdd_HHmmss"));
+                                 .arg(sessionStamp);
     const QString filePath = targetDir.filePath(filename);
 
     const int fourcc = cv::VideoWriter::fourcc('M', 'J', 'P', 'G');
@@ -1739,6 +1746,10 @@ bool Micromanipulator::startRecording(const cv::Size &frameSize, double fps)
     m_recordingFrameSize = frameSize;
     m_recordingFps = fps;
     m_recordingFilePath = filePath;
+    m_recordingSessionStamp = sessionStamp;
+    prepareGradientEnergyLogging(targetDir.filePath(
+        QStringLiteral("gradient_energy_%1.csv").arg(sessionStamp)),
+        QDateTime::currentMSecsSinceEpoch());
     qDebug() << "录屏已开始，输出路径:" << filePath;
     return true;
 }
@@ -1749,9 +1760,11 @@ void Micromanipulator::stopRecording()
         m_videoWriter.release();
         qDebug() << "录屏已停止，文件保存至" << m_recordingFilePath;
     }
+    finalizeGradientEnergyLogging();
     m_isRecording = false;
     m_recordingFrameSize = cv::Size();
     m_recordingFilePath.clear();
+    m_recordingSessionStamp.clear();
 }
 
 void Micromanipulator::resetTipSmoothingState()
@@ -4101,6 +4114,94 @@ QString Micromanipulator::buildDefaultTipErrorLogPath() const
     dir.mkpath("tip_error_logs");
     return dir.filePath(QStringLiteral("tip_error_logs/tip_error_%1.csv")
                             .arg(QDateTime::currentDateTime().toString("yyyyMMdd_HHmmss")));
+}
+
+void Micromanipulator::prepareGradientEnergyLogging(const QString &filePath, qint64 startMs)
+{
+    QMutexLocker locker(&m_gradientLogMutex);
+    if (m_gradientLogFile.isOpen()) {
+        m_gradientLogFile.close();
+    }
+    m_gradientLogFilePath = filePath;
+    m_gradientLogStartMs = startMs;
+    m_gradientLogFrameIndex = 0;
+    m_gradientLogPending = true;
+    m_gradientLogActive = false;
+    m_gradientLogStopRequested = false;
+}
+
+void Micromanipulator::finalizeGradientEnergyLogging()
+{
+    QMutexLocker locker(&m_gradientLogMutex);
+    m_gradientLogStopRequested = true;
+    if (m_gradientLogFile.isOpen()) {
+        m_gradientLogStream.flush();
+        m_gradientLogFile.close();
+    }
+    m_gradientLogStream.setDevice(nullptr);
+    m_gradientLogFilePath.clear();
+    m_gradientLogPending = false;
+    m_gradientLogActive = false;
+}
+
+void Micromanipulator::recordGradientEnergy(const cv::Mat &gray)
+{
+    if (gray.empty()) {
+        return;
+    }
+
+    cv::Mat gradX;
+    cv::Mat gradY;
+    cv::Sobel(gray, gradX, CV_32F, 1, 0, 3);
+    cv::Sobel(gray, gradY, CV_32F, 0, 1, 3);
+    const cv::Mat energyMat = gradX.mul(gradX) + gradY.mul(gradY);
+    const double gradientEnergy = cv::mean(energyMat)[0];
+    const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
+
+    QMutexLocker locker(&m_gradientLogMutex);
+
+    if (m_gradientLogStopRequested || (!m_isRecording && m_gradientLogActive)) {
+        if (m_gradientLogFile.isOpen()) {
+            m_gradientLogStream.flush();
+            m_gradientLogFile.close();
+        }
+        m_gradientLogStream.setDevice(nullptr);
+        m_gradientLogActive = false;
+        m_gradientLogPending = false;
+        m_gradientLogStopRequested = false;
+        return;
+    }
+
+    if (!m_isRecording) {
+        return;
+    }
+
+    if (!m_gradientLogActive) {
+        if (!m_gradientLogPending || m_gradientLogFilePath.isEmpty()) {
+            return;
+        }
+
+        m_gradientLogFile.setFileName(m_gradientLogFilePath);
+        if (!m_gradientLogFile.open(QIODevice::WriteOnly | QIODevice::Text)) {
+            qWarning() << "无法创建梯度能量记录文件:" << m_gradientLogFilePath;
+            m_gradientLogPending = false;
+            return;
+        }
+
+        m_gradientLogStream.setDevice(&m_gradientLogFile);
+        m_gradientLogStream.setRealNumberPrecision(6);
+        m_gradientLogStream << "timestamp,elapsed_ms,frame_index,gradient_energy\n";
+        m_gradientLogStream.flush();
+        m_gradientLogActive = true;
+        m_gradientLogPending = false;
+    }
+
+    const qint64 elapsedMs = nowMs - m_gradientLogStartMs;
+    m_gradientLogStream << QDateTime::currentDateTime().toString(Qt::ISODateWithMs) << ','
+                        << elapsedMs << ','
+                        << m_gradientLogFrameIndex++ << ','
+                        << gradientEnergy << '\n';
+    m_gradientLogStream.flush();
 }
 
 void Micromanipulator::startTipErrorRecording(const QString &filePath)

@@ -399,37 +399,75 @@ void Micromanipulator::on_BtnAutoFocus_clicked()
         return;
     }
 
-    const int steps = ui->spinFocusSteps->value();
-    const int stepSize = ui->spinFocusStepSize->value();
+    const int maxCoarseSteps = ui->spinFocusSteps->value();
+    const int coarseStep = ui->spinFocusCoarseStepSize->value();
     const int pauseMs = ui->spinFocusDelay->value();
+    int fineTolerance = std::abs(ui->spinFocusStepSize->value());
+
+    if (coarseStep <= 0) {
+        QMessageBox::warning(this, tr("提示"), tr("粗搜步长必须大于 0。"));
+        return;
+    }
+    if (fineTolerance < 1) {
+        fineTolerance = 1;
+    }
 
     m_hasFilteredFocusCenter = false; // 新一轮扫描前清空 ROI 平滑状态。
 
-    QString outputPath = ui->lineFocusOutputPath->text().trimmed();
-    if (outputPath.isEmpty()) {
-        outputPath = buildDefaultFocusLogPath();
-    }
-    QFileInfo fileInfo(outputPath);
-    if (fileInfo.path().isEmpty()) {
-        outputPath = buildDefaultFocusLogPath();
-        fileInfo = QFileInfo(outputPath);
-    }
-    QDir().mkpath(fileInfo.path());
-    ui->lineFocusOutputPath->setText(outputPath);
+    auto appendFocusLog = [&](const QString &phase, const FocusMeasureSample &sample) {
+        if (!m_isFocusLogRecording) {
+            return;
+        }
+        if (!m_focusLogFile.isOpen()) {
+            return;
+        }
+        m_focusLogStream << m_focusLogIndex << ','
+                         << phase << ','
+                         << sample.targetZ << ','
+                         << sample.roiX << ','
+                         << sample.roiY << ','
+                         << sample.roiW << ','
+                         << sample.roiH << ','
+                         << sample.roiCenterRawX << ','
+                         << sample.roiCenterRawY << ','
+                         << sample.roiCenterX << ','
+                         << sample.roiCenterY << ','
+                         << focusRoiSourceToString(sample.roiAnchoredToTip) << ','
+                         << sample.tenengrad << '\n';
+        ++m_focusLogIndex;
+        m_focusLogStream.flush();
+    };
 
-    std::vector<FocusMeasureSample> samples;
-    samples.reserve(steps);
+    int currentZ = m_microArmModule.currentPose()[2];
+    const int baseZ = currentZ;
+    int autofocusStepIndex = 0;
 
-    const int baseZ = m_microArmModule.currentPose()[2];
+    auto moveToZ = [&](int targetZ) -> bool {
+        const int delta = targetZ - currentZ;
+        if (delta == 0) {
+            return true;
+        }
+        if (!m_microArmModule.moveByDelta(0, 0, delta)) {
+            QMessageBox::warning(this, tr("提示"), tr("微动机械臂移动失败，自动聚焦已终止。"));
+            return false;
+        }
+        currentZ = targetZ;
+        Delay(pauseMs);
+        return true;
+    };
 
-    for (int i = 0; i < steps; ++i) {
-        ui->labelFocusStatus->setText(tr("采集中：%1/%2").arg(i + 1).arg(steps));
+    auto captureFocusAt = [&](int targetZ, const QString &phase, FocusMeasureSample *sampleOut) -> bool {
+        if (!moveToZ(targetZ)) {
+            return false;
+        }
+
+        ui->labelFocusStatus->setText(tr("%1：Z=%2").arg(phase).arg(targetZ));
         QCoreApplication::processEvents(QEventLoop::AllEvents, 50);
 
         cv::Mat latestFrame;
         if (!m_cameraModule.captureFrame(latestFrame) || latestFrame.empty()) {
             QMessageBox::warning(this, tr("提示"), tr("无法抓取图像，自动聚焦已终止。"));
-            break;
+            return false;
         }
 
         cv::Point2f roiCenter;
@@ -439,8 +477,9 @@ void Micromanipulator::on_BtnAutoFocus_clicked()
         const cv::Rect roiRect = buildFocusRoi(latestFrame, roiFrame, roiCenter, roiAnchoredToTip, roiCenterRaw);
 
         FocusMeasureSample sample = evaluateFocusMeasures(roiFrame.empty() ? latestFrame : roiFrame,
-                                                          i,
-                                                          baseZ + i * stepSize);
+                                                          autofocusStepIndex,
+                                                          targetZ);
+        ++autofocusStepIndex;
         sample.roiX = roiRect.x;
         sample.roiY = roiRect.y;
         sample.roiW = roiRect.width;
@@ -450,95 +489,232 @@ void Micromanipulator::on_BtnAutoFocus_clicked()
         sample.roiCenterX = roiCenter.x;
         sample.roiCenterY = roiCenter.y;
         sample.roiAnchoredToTip = roiAnchoredToTip;
-
-        samples.push_back(sample);
-
-        if (i + 1 < steps) {
-            if (!m_microArmModule.moveByDelta(0, 0, stepSize)) {
-                QMessageBox::warning(this, tr("提示"), tr("微动机械臂移动失败，已提前终止扫描。"));
-                break;
-            }
-            Delay(pauseMs);
+        appendFocusLog(phase, sample);
+        if (sampleOut) {
+            *sampleOut = sample;
         }
-    }
+        return true;
+    };
 
-    if (samples.empty()) {
+    std::vector<FocusMeasureSample> coarseTrace;
+    coarseTrace.reserve(static_cast<size_t>(maxCoarseSteps));
+
+    FocusMeasureSample baseSample;
+    if (!captureFocusAt(baseZ, QStringLiteral("粗搜-起点"), &baseSample)) {
         ui->labelFocusStatus->setText(tr("采集失败"));
         return;
     }
+    coarseTrace.push_back(baseSample);
 
-    if (stepSize != 0 && samples.size() > 1) {
-        m_microArmModule.moveByDelta(0, 0, -stepSize * static_cast<int>(samples.size() - 1));
+    int direction = 1;
+    const int directionMode = ui->comboFocusDirection->currentIndex();
+    FocusMeasureSample firstSample;
+
+    if (directionMode == 0) {
+        FocusMeasureSample plusSample;
+        if (!captureFocusAt(baseZ + coarseStep, QStringLiteral("粗搜-探测"), &plusSample)) {
+            ui->labelFocusStatus->setText(tr("采集失败"));
+            return;
+        }
+
+        if (plusSample.tenengrad > baseSample.tenengrad) {
+            direction = 1;
+            firstSample = plusSample;
+        } else {
+            if (!moveToZ(baseZ)) {
+                ui->labelFocusStatus->setText(tr("采集失败"));
+                return;
+            }
+
+            FocusMeasureSample minusSample;
+            if (!captureFocusAt(baseZ - coarseStep, QStringLiteral("粗搜-探测"), &minusSample)) {
+                ui->labelFocusStatus->setText(tr("采集失败"));
+                return;
+            }
+
+            if (minusSample.tenengrad >= plusSample.tenengrad) {
+                direction = -1;
+                firstSample = minusSample;
+            } else {
+                direction = 1;
+                firstSample = plusSample;
+            }
+        }
+
+        const int desiredZ = baseZ + direction * coarseStep;
+        if (currentZ != desiredZ && !moveToZ(desiredZ)) {
+            ui->labelFocusStatus->setText(tr("采集失败"));
+            return;
+        }
+    } else {
+        direction = (directionMode == 1) ? 1 : -1;
+        if (!captureFocusAt(baseZ + direction * coarseStep, QStringLiteral("粗搜"), &firstSample)) {
+            ui->labelFocusStatus->setText(tr("采集失败"));
+            return;
+        }
     }
 
-    const auto normalizeSeries = [&samples](auto accessor) {
-        double minVal = std::numeric_limits<double>::max();
-        double maxVal = std::numeric_limits<double>::lowest();
-        for (const auto &s : samples) {
-            const double value = accessor(s);
-            minVal = std::min(minVal, value);
-            maxVal = std::max(maxVal, value);
+    coarseTrace.push_back(firstSample);
+
+    bool intervalFound = false;
+    int intervalStartZ = baseZ;
+    int intervalEndZ = baseZ;
+    constexpr double kDropRatio = 0.08;
+
+    for (int i = static_cast<int>(coarseTrace.size()); i < maxCoarseSteps; ++i) {
+        FocusMeasureSample sample;
+        if (!captureFocusAt(currentZ + direction * coarseStep, QStringLiteral("粗搜"), &sample)) {
+            ui->labelFocusStatus->setText(tr("采集失败"));
+            return;
         }
 
-        std::vector<double> normalized(samples.size(), 0.0);
-        const double range = maxVal - minVal;
-        if (range < 1e-12) {
-            return normalized; // 所有值一致，保持 0 避免 NaN。
+        coarseTrace.push_back(sample);
+
+        if (coarseTrace.size() < 3) {
+            continue;
         }
 
-        for (size_t i = 0; i < samples.size(); ++i) {
-            normalized[i] = (accessor(samples[i]) - minVal) / range;
+        const auto &low1 = coarseTrace[coarseTrace.size() - 3];
+        const auto &peak = coarseTrace[coarseTrace.size() - 2];
+        const auto &low2 = coarseTrace[coarseTrace.size() - 1];
+        const double threshold = std::max(1e-6, peak.tenengrad * kDropRatio);
+
+        if (peak.tenengrad > low1.tenengrad
+            && peak.tenengrad > low2.tenengrad
+            && (peak.tenengrad - low1.tenengrad) >= threshold
+            && (peak.tenengrad - low2.tenengrad) >= threshold) {
+            intervalFound = true;
+            intervalStartZ = low1.targetZ;
+            intervalEndZ = low2.targetZ;
+            break;
         }
-        return normalized;
-    };
+    }
 
-    const std::vector<double> varianceNorm      = normalizeSeries([](const FocusMeasureSample &s) { return s.variance; });
-    const std::vector<double> tenengradNorm     = normalizeSeries([](const FocusMeasureSample &s) { return s.tenengrad; });
-    const std::vector<double> brennerNorm       = normalizeSeries([](const FocusMeasureSample &s) { return s.brenner; });
-    const std::vector<double> laplacianNorm     = normalizeSeries([](const FocusMeasureSample &s) { return s.laplacianVar; });
-    const std::vector<double> entropyNorm       = normalizeSeries([](const FocusMeasureSample &s) { return s.entropy; });
-    const std::vector<double> highFreqNorm      = normalizeSeries([](const FocusMeasureSample &s) { return s.highFrequency; });
+    if (!intervalFound) {
+        auto bestIt = std::max_element(coarseTrace.begin(), coarseTrace.end(),
+                                       [](const FocusMeasureSample &a, const FocusMeasureSample &b) {
+                                           return a.tenengrad < b.tenengrad;
+                                       });
+        const int bestIndex = static_cast<int>(std::distance(coarseTrace.begin(), bestIt));
+        const int leftIndex = std::max(0, bestIndex - 1);
+        const int rightIndex = std::min(static_cast<int>(coarseTrace.size()) - 1, bestIndex + 1);
 
-    QFile file(outputPath);
-    if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
-        QMessageBox::warning(this, tr("提示"), tr("无法写入文件：%1").arg(outputPath));
-        ui->labelFocusStatus->setText(tr("保存失败"));
+        intervalStartZ = coarseTrace[static_cast<size_t>(leftIndex)].targetZ;
+        intervalEndZ = coarseTrace[static_cast<size_t>(rightIndex)].targetZ;
+
+        if (intervalStartZ == intervalEndZ) {
+            intervalStartZ = bestIt->targetZ - coarseStep;
+            intervalEndZ = bestIt->targetZ + coarseStep;
+        }
+    }
+
+    int minZ = std::min(intervalStartZ, intervalEndZ);
+    int maxZ = std::max(intervalStartZ, intervalEndZ);
+
+    if (maxZ - minZ < fineTolerance) {
+        const int finalZ = static_cast<int>(std::round((minZ + maxZ) / 2.0));
+        FocusMeasureSample finalSample;
+        if (captureFocusAt(finalZ, QStringLiteral("精搜-完成"), &finalSample)) {
+            ui->labelFocusStatus->setText(tr("完成：Z=%1").arg(finalZ));
+        }
+    } else {
+        constexpr double kGoldenRatio = (std::sqrt(5.0) - 1.0) / 2.0;
+        double a = static_cast<double>(minZ);
+        double b = static_cast<double>(maxZ);
+
+        auto clampZ = [&](double pos) {
+            int z = static_cast<int>(std::round(pos));
+            z = std::clamp(z, minZ, maxZ);
+            return z;
+        };
+
+        double x1 = b - kGoldenRatio * (b - a);
+        double x2 = a + kGoldenRatio * (b - a);
+        int z1 = clampZ(x1);
+        int z2 = clampZ(x2);
+        if (z1 == z2) {
+            if (z1 + 1 <= maxZ) {
+                z2 = z1 + 1;
+            } else if (z1 - 1 >= minZ) {
+                z1 = z1 - 1;
+            }
+        }
+
+        FocusMeasureSample sample1;
+        FocusMeasureSample sample2;
+        if (!captureFocusAt(z1, QStringLiteral("精搜"), &sample1)
+            || !captureFocusAt(z2, QStringLiteral("精搜"), &sample2)) {
+            ui->labelFocusStatus->setText(tr("采集失败"));
+            return;
+        }
+
+        double f1 = sample1.tenengrad;
+        double f2 = sample2.tenengrad;
+        int iter = 0;
+        const int maxFineIter = 50;
+
+        while ((b - a) > fineTolerance && iter < maxFineIter) {
+            ++iter;
+            if (f1 < f2) {
+                a = x1;
+                x1 = x2;
+                f1 = f2;
+                x2 = a + kGoldenRatio * (b - a);
+                z2 = clampZ(x2);
+                if (z2 == z1) {
+                    z2 = std::min(maxZ, z1 + 1);
+                }
+                if (!captureFocusAt(z2, QStringLiteral("精搜"), &sample2)) {
+                    ui->labelFocusStatus->setText(tr("采集失败"));
+                    return;
+                }
+                f2 = sample2.tenengrad;
+            } else {
+                b = x2;
+                x2 = x1;
+                f2 = f1;
+                x1 = b - kGoldenRatio * (b - a);
+                z1 = clampZ(x1);
+                if (z1 == z2) {
+                    z1 = std::max(minZ, z2 - 1);
+                }
+                if (!captureFocusAt(z1, QStringLiteral("精搜"), &sample1)) {
+                    ui->labelFocusStatus->setText(tr("采集失败"));
+                    return;
+                }
+                f1 = sample1.tenengrad;
+            }
+        }
+
+        const int finalZ = static_cast<int>(std::round((a + b) / 2.0));
+        FocusMeasureSample finalSample;
+        if (captureFocusAt(finalZ, QStringLiteral("精搜-完成"), &finalSample)) {
+            ui->labelFocusStatus->setText(tr("完成：Z=%1").arg(finalZ));
+        }
+    }
+
+    if (m_isFocusLogRecording && !m_focusLogFilePath.isEmpty()) {
+        ui->labelFocusStatus->setText(tr("日志记录中：%1").arg(m_focusLogFilePath));
+    }
+}
+
+void Micromanipulator::on_BtnFocusLog_clicked()
+{
+    if (m_isFocusLogRecording) {
+        const QString savedPath = m_focusLogFilePath;
+        stopFocusLogRecording();
+        ui->BtnFocusLog->setText(QStringLiteral("开始记录聚焦日志"));
+        if (!savedPath.isEmpty()) {
+            ui->labelFocusStatus->setText(tr("日志已保存：%1").arg(savedPath));
+        }
         return;
     }
 
-    QTextStream out(&file);
-    out << "step,z,roi_x,roi_y,roi_w,roi_h,roi_center_raw_x,roi_center_raw_y,roi_center_x,roi_center_y,roi_source,"
-           "variance,tenengrad,brenner,laplacian_variance,entropy,high_frequency,"
-           "variance_norm,tenengrad_norm,brenner_norm,laplacian_variance_norm,entropy_norm,high_frequency_norm\n";
-    for (int i = 0; i < static_cast<int>(samples.size()); ++i) {
-        const auto &sample = samples[static_cast<size_t>(i)];
-        out << sample.stepIndex << ','
-            << sample.targetZ << ','
-            << sample.roiX << ','
-            << sample.roiY << ','
-            << sample.roiW << ','
-            << sample.roiH << ','
-            << sample.roiCenterRawX << ','
-            << sample.roiCenterRawY << ','
-            << sample.roiCenterX << ','
-            << sample.roiCenterY << ','
-            << focusRoiSourceToString(sample.roiAnchoredToTip) << ','
-            << sample.variance << ','
-            << sample.tenengrad << ','
-            << sample.brenner << ','
-            << sample.laplacianVar << ','
-            << sample.entropy << ','
-            << sample.highFrequency << ','
-            << varianceNorm[static_cast<size_t>(i)] << ','
-            << tenengradNorm[static_cast<size_t>(i)] << ','
-            << brennerNorm[static_cast<size_t>(i)] << ','
-            << laplacianNorm[static_cast<size_t>(i)] << ','
-            << entropyNorm[static_cast<size_t>(i)] << ','
-            << highFreqNorm[static_cast<size_t>(i)] << '\n';
+    const QString filePath = ui->lineFocusOutputPath->text().trimmed();
+    if (startFocusLogRecording(filePath)) {
+        ui->BtnFocusLog->setText(QStringLiteral("停止记录聚焦日志"));
+        ui->labelFocusStatus->setText(tr("日志记录中：%1").arg(m_focusLogFilePath));
     }
-    file.close();
-
-    ui->labelFocusStatus->setText(tr("已保存：%1").arg(outputPath));
 }
 
 void Micromanipulator::ShowCamera()
@@ -3915,8 +4091,19 @@ cv::Rect Micromanipulator::buildFocusRoi(const cv::Mat &bgrFrame, cv::Mat &roiOu
     const int cx = static_cast<int>(std::round(roiCenter.x));
     const int cy = static_cast<int>(std::round(roiCenter.y));
 
-    int x = std::clamp(cx - half, 0, std::max(0, bgrFrame.cols - 1));
-    int y = std::clamp(cy - half, 0, std::max(0, bgrFrame.rows - 1));
+    int x = 0;
+    int y = 0;
+    if (roiAnchoredToTip) {
+        // 让针尖落在 ROI 的右边框，便于保持针尖在 ROI 的视场边缘。
+        x = cx - requestedSize;
+        y = cy - half;
+    } else {
+        x = cx - half;
+        y = cy - half;
+    }
+    x = std::clamp(x, 0, std::max(0, bgrFrame.cols - 1));
+    y = std::clamp(y, 0, std::max(0, bgrFrame.rows - 1));
+
     int width = std::min(requestedSize, bgrFrame.cols - x);
     int height = std::min(requestedSize, bgrFrame.rows - y);
 
@@ -4087,11 +4274,67 @@ double Micromanipulator::focusHighFrequencyEnergy(const cv::Mat &gray) const
 
 QString Micromanipulator::buildDefaultFocusLogPath() const
 {
-    const QString baseDir = QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation);
+    QString baseDir = QStandardPaths::writableLocation(QStandardPaths::DesktopLocation);
+    if (baseDir.isEmpty()) {
+        baseDir = QStringLiteral("C:/Users/Lee/Desktop");
+    }
     QDir dir(baseDir.isEmpty() ? QDir::homePath() : baseDir);
-    dir.mkpath("autofocus_logs");
-    return dir.filePath(QStringLiteral("autofocus_logs/autofocus_%1.csv")
+    if (!dir.exists()) {
+        dir.mkpath(".");
+    }
+    return dir.filePath(QStringLiteral("autofocus_%1.csv")
                             .arg(QDateTime::currentDateTime().toString("yyyyMMdd_HHmmss")));
+}
+
+bool Micromanipulator::startFocusLogRecording(const QString &filePath)
+{
+    stopFocusLogRecording();
+
+    QString outputPath = filePath.trimmed();
+    if (outputPath.isEmpty()) {
+        outputPath = buildDefaultFocusLogPath();
+    }
+
+    if (!outputPath.endsWith(".csv", Qt::CaseInsensitive)) {
+        const QString timestamp = QDateTime::currentDateTime().toString("yyyyMMdd_HHmmss");
+        QDir outputDir(outputPath);
+        if (!outputDir.exists()) {
+            outputDir.mkpath(".");
+        }
+        outputPath = outputDir.filePath(QStringLiteral("autofocus_%1.csv").arg(timestamp));
+    }
+
+    QFileInfo fileInfo(outputPath);
+    if (!fileInfo.dir().exists()) {
+        QDir().mkpath(fileInfo.dir().path());
+    }
+
+    m_focusLogFilePath = outputPath;
+    m_focusLogFile.setFileName(m_focusLogFilePath);
+    if (!m_focusLogFile.open(QIODevice::WriteOnly | QIODevice::Text)) {
+        QMessageBox::warning(this, tr("提示"), tr("无法创建自动聚焦日志：%1").arg(m_focusLogFilePath));
+        m_focusLogFilePath.clear();
+        return false;
+    }
+
+    m_focusLogStream.setDevice(&m_focusLogFile);
+    m_focusLogStream.setRealNumberPrecision(6);
+    m_focusLogIndex = 0;
+    m_isFocusLogRecording = true;
+    ui->lineFocusOutputPath->setText(m_focusLogFilePath);
+
+    m_focusLogStream << "index,phase,z,roi_x,roi_y,roi_w,roi_h,roi_center_raw_x,roi_center_raw_y,roi_center_x,roi_center_y,roi_source,"
+                        "tenengrad\n";
+    m_focusLogStream.flush();
+    return true;
+}
+
+void Micromanipulator::stopFocusLogRecording()
+{
+    if (m_focusLogFile.isOpen()) {
+        m_focusLogFile.close();
+    }
+    m_isFocusLogRecording = false;
 }
 
 QString Micromanipulator::buildDefaultTipErrorLogPath() const

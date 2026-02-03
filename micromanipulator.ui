@@ -1158,36 +1158,10 @@
        <string>自动聚焦扫描</string>
       </property>
       <layout class="QGridLayout" name="gridLayoutAutoFocus">
-       <item row="1" column="1">
-        <widget class="QSpinBox" name="spinFocusDelay">
-         <property name="minimum">
-          <number>30</number>
-         </property>
-         <property name="maximum">
-          <number>10000</number>
-         </property>
-         <property name="value">
-          <number>200</number>
-         </property>
-        </widget>
-       </item>
-       <item row="0" column="2">
-        <widget class="QLabel" name="labelFocusStepSize">
+       <item row="0" column="0">
+        <widget class="QLabel" name="labelFocusSteps">
          <property name="text">
-          <string>Z轴微步：</string>
-         </property>
-        </widget>
-       </item>
-       <item row="2" column="1">
-        <widget class="QSpinBox" name="spinFocusRoiSize">
-         <property name="minimum">
-          <number>32</number>
-         </property>
-         <property name="maximum">
-          <number>1200</number>
-         </property>
-         <property name="value">
-          <number>220</number>
+          <string>步进数：</string>
          </property>
         </widget>
        </item>
@@ -1204,34 +1178,23 @@
          </property>
         </widget>
        </item>
-       <item row="1" column="3">
-        <widget class="QLineEdit" name="lineFocusOutputPath">
-         <property name="placeholderText">
-          <string>自动生成 CSV（Excel 可打开）</string>
+       <item row="0" column="2">
+        <widget class="QLabel" name="labelFocusCoarseStepSize">
+         <property name="text">
+          <string>粗搜步长：</string>
          </property>
         </widget>
        </item>
-       <item row="2" column="2">
-        <widget class="QLabel" name="labelFocusRoiOverlay">
-         <property name="text">
-          <string>显示 ROI 叠加：</string>
+       <item row="0" column="3">
+        <widget class="QSpinBox" name="spinFocusCoarseStepSize">
+         <property name="minimum">
+          <number>1</number>
          </property>
-        </widget>
-       </item>
-       <item row="1" column="2">
-        <widget class="QLabel" name="labelFocusPath">
-         <property name="text">
-          <string>输出路径：</string>
+         <property name="maximum">
+          <number>100000</number>
          </property>
-        </widget>
-       </item>
-       <item row="2" column="3">
-        <widget class="QCheckBox" name="checkFocusRoiOverlay">
-         <property name="text">
-          <string>启用</string>
-         </property>
-         <property name="checked">
-          <bool>true</bool>
+         <property name="value">
+          <number>50</number>
          </property>
         </widget>
        </item>
@@ -1242,47 +1205,137 @@
          </property>
         </widget>
        </item>
-       <item row="3" column="0" colspan="2">
-        <widget class="QPushButton" name="BtnAutoFocus">
-         <property name="text">
-          <string>开始自动聚焦扫描</string>
+       <item row="1" column="1">
+        <widget class="QSpinBox" name="spinFocusDelay">
+         <property name="minimum">
+          <number>30</number>
+         </property>
+         <property name="maximum">
+          <number>10000</number>
+         </property>
+         <property name="value">
+          <number>200</number>
          </property>
         </widget>
        </item>
+       <item row="1" column="2">
+        <widget class="QLabel" name="labelFocusDirection">
+         <property name="text">
+          <string>初始方向：</string>
+         </property>
+        </widget>
+       </item>
+       <item row="1" column="3">
+        <widget class="QComboBox" name="comboFocusDirection">
+         <item>
+          <property name="text">
+           <string>自动判断</string>
+          </property>
+         </item>
+         <item>
+          <property name="text">
+           <string>正向(+Z)</string>
+          </property>
+         </item>
+         <item>
+          <property name="text">
+           <string>反向(-Z)</string>
+          </property>
+         </item>
+        </widget>
+       </item>
        <item row="2" column="0">
+        <widget class="QLabel" name="labelFocusPath">
+         <property name="text">
+          <string>输出路径：</string>
+         </property>
+        </widget>
+       </item>
+       <item row="2" column="1" colspan="3">
+        <widget class="QLineEdit" name="lineFocusOutputPath">
+         <property name="placeholderText">
+          <string>自动生成 CSV（Excel 可打开）</string>
+         </property>
+        </widget>
+       </item>
+       <item row="3" column="0">
+        <widget class="QLabel" name="labelFocusStepSize">
+         <property name="text">
+          <string>精搜收敛阈值：</string>
+         </property>
+        </widget>
+       </item>
+       <item row="3" column="1">
+        <widget class="QSpinBox" name="spinFocusStepSize">
+         <property name="minimum">
+          <number>1</number>
+         </property>
+         <property name="maximum">
+          <number>100000</number>
+         </property>
+         <property name="value">
+          <number>5</number>
+         </property>
+        </widget>
+       </item>
+       <item row="3" column="2">
         <widget class="QLabel" name="labelFocusRoiSize">
          <property name="text">
           <string>ROI 边长（像素）：</string>
          </property>
         </widget>
        </item>
-       <item row="0" column="0">
-        <widget class="QLabel" name="labelFocusSteps">
-         <property name="text">
-          <string>步进数：</string>
+       <item row="3" column="3">
+        <widget class="QSpinBox" name="spinFocusRoiSize">
+         <property name="minimum">
+          <number>32</number>
+         </property>
+         <property name="maximum">
+          <number>1200</number>
+         </property>
+         <property name="value">
+          <number>220</number>
          </property>
         </widget>
        </item>
-       <item row="3" column="2" colspan="2">
+       <item row="4" column="2">
+        <widget class="QLabel" name="labelFocusRoiOverlay">
+         <property name="text">
+          <string>显示 ROI 叠加：</string>
+         </property>
+        </widget>
+       </item>
+       <item row="4" column="0" colspan="2">
+        <widget class="QPushButton" name="BtnFocusLog">
+         <property name="text">
+          <string>开始记录聚焦日志</string>
+         </property>
+        </widget>
+       </item>
+       <item row="4" column="3">
+        <widget class="QCheckBox" name="checkFocusRoiOverlay">
+         <property name="text">
+          <string>启用</string>
+         </property>
+         <property name="checked">
+          <bool>true</bool>
+         </property>
+        </widget>
+       </item>
+       <item row="5" column="0" colspan="2">
+        <widget class="QPushButton" name="BtnAutoFocus">
+         <property name="text">
+          <string>开始自动聚焦扫描</string>
+         </property>
+        </widget>
+       </item>
+       <item row="5" column="2" colspan="2">
         <widget class="QLabel" name="labelFocusStatus">
          <property name="text">
           <string>等待启动</string>
          </property>
          <property name="alignment">
           <set>Qt::AlignLeading|Qt::AlignLeft|Qt::AlignVCenter</set>
-         </property>
-        </widget>
-       </item>
-       <item row="0" column="3">
-        <widget class="QSpinBox" name="spinFocusStepSize">
-         <property name="minimum">
-          <number>-100000</number>
-         </property>
-         <property name="maximum">
-          <number>100000</number>
-         </property>
-         <property name="value">
-          <number>10</number>
          </property>
         </widget>
        </item>

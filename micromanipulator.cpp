@@ -13,6 +13,7 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QMutexLocker>
 #include <QTextStream>
 #include <QDateTime>
 #include <QFileDialog>
@@ -267,6 +268,10 @@ Micromanipulator::Micromanipulator(QWidget *parent)
     bindMicroJogButton(ui->BtnMicroJogDown, QPoint(0, 1));
     bindMicroJogButton(ui->BtnMicroJogLeft, QPoint(1, 0));
     bindMicroJogButton(ui->BtnMicroJogRight, QPoint(-1, 0));
+    ui->BtnMicroSnakeScan->setEnabled(false);
+    m_microSnakeTimer.setInterval(m_microSnakeIntervalMs);
+    m_microSnakeTimer.setSingleShot(false);
+    connect(&m_microSnakeTimer, &QTimer::timeout, this, &Micromanipulator::handleMicroSnakeScanStep);
 
     ui->BtnMicroJogUp->setEnabled(false);
     ui->BtnMicroJogDown->setEnabled(false);
@@ -340,6 +345,45 @@ void Micromanipulator::triggerMicroJogStep()
     mic_Z = pose[2];
 }
 
+void Micromanipulator::stopMicroSnakeScan()
+{
+    if (!m_microSnakeRunning) {
+        return;
+    }
+
+    m_microSnakeTimer.stop();
+    m_microSnakeRunning = false;
+    m_microSnakeIndex = 0;
+    m_microSnakePath.clear();
+    ui->BtnMicroSnakeScan->setText(QStringLiteral("蛇形扫描"));
+}
+
+void Micromanipulator::handleMicroSnakeScanStep()
+{
+    if (!m_microSnakeRunning || !mIsOpen) {
+        stopMicroSnakeScan();
+        return;
+    }
+
+    if (m_microSnakeIndex >= static_cast<int>(m_microSnakePath.size())) {
+        stopMicroSnakeScan();
+        ui->FeedBack->append(tr("蛇形扫描已完成"));
+        return;
+    }
+
+    const cv::Vec3i target = m_microSnakePath[m_microSnakeIndex];
+    if (!m_microArmModule.moveToPose(target[0], target[1], target[2])) {
+        ui->FeedBack->append(tr("蛇形扫描移动失败，已停止。"));
+        stopMicroSnakeScan();
+        return;
+    }
+
+    mic_X = target[0];
+    mic_Y = target[1];
+    mic_Z = target[2];
+    ++m_microSnakeIndex;
+}
+
 void Micromanipulator::closeEvent(QCloseEvent *event)
 {
     if (timer1 && timer1->isActive()) {
@@ -351,6 +395,7 @@ void Micromanipulator::closeEvent(QCloseEvent *event)
     }
 
     stopRecording();
+    stopMicroSnakeScan();
     // saveTipLogToCsv();
 
     m_imageProcessorModule.requestStop();
@@ -648,6 +693,55 @@ void Micromanipulator::on_BtnRecordTipError_clicked()
         ui->BtnRecordTipError->setText(QStringLiteral("停止记录误差"));
         ui->FeedBack->setText(tr("误差记录中：%1").arg(m_tipErrorFilePath));
     }
+}
+
+void Micromanipulator::on_BtnMicroSnakeScan_clicked()
+{
+    if (!mIsOpen) {
+        QMessageBox::warning(this, tr("提示"), tr("请先打开微动关节串口后再启动蛇形扫描。"));
+        return;
+    }
+
+    if (m_microSnakeRunning) {
+        stopMicroSnakeScan();
+        ui->FeedBack->append(tr("蛇形扫描已停止"));
+        return;
+    }
+
+    constexpr int kXStart = 0;
+    constexpr int kXEnd = -300000;
+    constexpr int kXStep = -50000;
+    constexpr int kYStart = -200000;
+    constexpr int kYEnd = 200000;
+    constexpr int kYStep = 50000;
+    constexpr int kZFixed = 0;
+
+    m_microSnakePath.clear();
+    int xIndex = 0;
+    for (int x = kXStart; x >= kXEnd; x += kXStep) {
+        if (xIndex % 2 == 0) {
+            for (int y = kYStart; y <= kYEnd; y += kYStep) {
+                m_microSnakePath.emplace_back(x, y, kZFixed);
+            }
+        } else {
+            for (int y = kYEnd; y >= kYStart; y -= kYStep) {
+                m_microSnakePath.emplace_back(x, y, kZFixed);
+            }
+        }
+        ++xIndex;
+    }
+
+    if (m_microSnakePath.empty()) {
+        ui->FeedBack->append(tr("蛇形扫描路径为空，未启动。"));
+        return;
+    }
+
+    m_microSnakeIndex = 0;
+    m_microSnakeRunning = true;
+    ui->BtnMicroSnakeScan->setText(QStringLiteral("停止扫描"));
+    ui->FeedBack->append(tr("蛇形扫描开始，共 %1 步").arg(m_microSnakePath.size()));
+    handleMicroSnakeScanStep();
+    m_microSnakeTimer.start();
 }
 
 void Micromanipulator::handleCameraOpened()
@@ -1074,6 +1168,11 @@ ImageProcessor::ProcessedImage Micromanipulator::runImageProcessingPipeline(cons
         m_clahe = cv::createCLAHE(6.0, cv::Size(8, 8));
     }
     m_clahe->apply(gray, claheGray);
+
+    {
+        const cv::Mat grayMat = gray.getMat(cv::ACCESS_READ);
+        recordGradientEnergy(grayMat);
+    }
 
     cv::UMat binaryImageGpu;
     cv::threshold(claheGray, binaryImageGpu, 180, 255, cv::THRESH_BINARY);
@@ -1725,8 +1824,9 @@ bool Micromanipulator::startRecording(const cv::Size &frameSize, double fps)
         targetDir.mkpath(".");
     }
 
+    const QString sessionStamp = QDateTime::currentDateTime().toString("yyyyMMdd_HHmmss");
     const QString filename = QStringLiteral("camera_record_%1.avi")
-                                 .arg(QDateTime::currentDateTime().toString("yyyyMMdd_HHmmss"));
+                                 .arg(sessionStamp);
     const QString filePath = targetDir.filePath(filename);
 
     const int fourcc = cv::VideoWriter::fourcc('M', 'J', 'P', 'G');
@@ -1739,6 +1839,10 @@ bool Micromanipulator::startRecording(const cv::Size &frameSize, double fps)
     m_recordingFrameSize = frameSize;
     m_recordingFps = fps;
     m_recordingFilePath = filePath;
+    m_recordingSessionStamp = sessionStamp;
+    prepareGradientEnergyLogging(targetDir.filePath(
+        QStringLiteral("gradient_energy_%1.csv").arg(sessionStamp)),
+        QDateTime::currentMSecsSinceEpoch());
     qDebug() << "录屏已开始，输出路径:" << filePath;
     return true;
 }
@@ -1749,9 +1853,11 @@ void Micromanipulator::stopRecording()
         m_videoWriter.release();
         qDebug() << "录屏已停止，文件保存至" << m_recordingFilePath;
     }
+    finalizeGradientEnergyLogging();
     m_isRecording = false;
     m_recordingFrameSize = cv::Size();
     m_recordingFilePath.clear();
+    m_recordingSessionStamp.clear();
 }
 
 void Micromanipulator::resetTipSmoothingState()
@@ -1858,8 +1964,10 @@ void Micromanipulator::on_BtnSerialPortOnOff_clicked()
         ui->BtnMicroJogLeft->setEnabled(enabled);
         ui->BtnMicroJogRight->setEnabled(enabled);
         ui->spinBoxMicroJogStep->setEnabled(enabled);
+        ui->BtnMicroSnakeScan->setEnabled(enabled);
         if (!enabled) {
             stopMicroJog();
+            stopMicroSnakeScan();
         }
     };
 
@@ -4101,6 +4209,94 @@ QString Micromanipulator::buildDefaultTipErrorLogPath() const
     dir.mkpath("tip_error_logs");
     return dir.filePath(QStringLiteral("tip_error_logs/tip_error_%1.csv")
                             .arg(QDateTime::currentDateTime().toString("yyyyMMdd_HHmmss")));
+}
+
+void Micromanipulator::prepareGradientEnergyLogging(const QString &filePath, qint64 startMs)
+{
+    QMutexLocker locker(&m_gradientLogMutex);
+    if (m_gradientLogFile.isOpen()) {
+        m_gradientLogFile.close();
+    }
+    m_gradientLogFilePath = filePath;
+    m_gradientLogStartMs = startMs;
+    m_gradientLogFrameIndex = 0;
+    m_gradientLogPending = true;
+    m_gradientLogActive = false;
+    m_gradientLogStopRequested = false;
+}
+
+void Micromanipulator::finalizeGradientEnergyLogging()
+{
+    QMutexLocker locker(&m_gradientLogMutex);
+    m_gradientLogStopRequested = true;
+    if (m_gradientLogFile.isOpen()) {
+        m_gradientLogStream.flush();
+        m_gradientLogFile.close();
+    }
+    m_gradientLogStream.setDevice(nullptr);
+    m_gradientLogFilePath.clear();
+    m_gradientLogPending = false;
+    m_gradientLogActive = false;
+}
+
+void Micromanipulator::recordGradientEnergy(const cv::Mat &gray)
+{
+    if (gray.empty()) {
+        return;
+    }
+
+    cv::Mat gradX;
+    cv::Mat gradY;
+    cv::Sobel(gray, gradX, CV_32F, 1, 0, 3);
+    cv::Sobel(gray, gradY, CV_32F, 0, 1, 3);
+    const cv::Mat energyMat = gradX.mul(gradX) + gradY.mul(gradY);
+    const double gradientEnergy = cv::mean(energyMat)[0];
+    const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
+
+    QMutexLocker locker(&m_gradientLogMutex);
+
+    if (m_gradientLogStopRequested || (!m_isRecording && m_gradientLogActive)) {
+        if (m_gradientLogFile.isOpen()) {
+            m_gradientLogStream.flush();
+            m_gradientLogFile.close();
+        }
+        m_gradientLogStream.setDevice(nullptr);
+        m_gradientLogActive = false;
+        m_gradientLogPending = false;
+        m_gradientLogStopRequested = false;
+        return;
+    }
+
+    if (!m_isRecording) {
+        return;
+    }
+
+    if (!m_gradientLogActive) {
+        if (!m_gradientLogPending || m_gradientLogFilePath.isEmpty()) {
+            return;
+        }
+
+        m_gradientLogFile.setFileName(m_gradientLogFilePath);
+        if (!m_gradientLogFile.open(QIODevice::WriteOnly | QIODevice::Text)) {
+            qWarning() << "无法创建梯度能量记录文件:" << m_gradientLogFilePath;
+            m_gradientLogPending = false;
+            return;
+        }
+
+        m_gradientLogStream.setDevice(&m_gradientLogFile);
+        m_gradientLogStream.setRealNumberPrecision(6);
+        m_gradientLogStream << "timestamp,elapsed_ms,frame_index,gradient_energy\n";
+        m_gradientLogStream.flush();
+        m_gradientLogActive = true;
+        m_gradientLogPending = false;
+    }
+
+    const qint64 elapsedMs = nowMs - m_gradientLogStartMs;
+    m_gradientLogStream << QDateTime::currentDateTime().toString(Qt::ISODateWithMs) << ','
+                        << elapsedMs << ','
+                        << m_gradientLogFrameIndex++ << ','
+                        << gradientEnergy << '\n';
+    m_gradientLogStream.flush();
 }
 
 void Micromanipulator::startTipErrorRecording(const QString &filePath)

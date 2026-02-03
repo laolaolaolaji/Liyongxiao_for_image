@@ -63,6 +63,11 @@ void ImageProcessor::run()
 
             request = m_queue.front();
             m_queue.pop_front();
+            if (!m_queue.empty()) {
+                // 只处理最新帧，避免高分辨率下队列堆积导致卡顿。
+                request = m_queue.back();
+                m_queue.clear();
+            }
             processorCopy = m_processor;
         }
 

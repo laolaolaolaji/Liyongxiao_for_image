@@ -22,6 +22,7 @@
 #include <QSerialPort>
 #include <QPoint>
 #include <QFile>
+#include <QMutex>
 #include <QTextStream>
 #include <QString>
 #include <windows.h> // 包含WinAPI头文件
@@ -180,6 +181,7 @@ private slots:
     void on_Btn_EyeHandCalibration_solute_clicked();
 
     void on_BtnRecordTipError_clicked();
+    void on_BtnMicroSnakeScan_clicked();
 
 public:
     //相机相关
@@ -436,6 +438,9 @@ private:
     double focusHighFrequencyEnergy(const cv::Mat &gray) const;
     QString buildDefaultFocusLogPath() const;
     QString buildDefaultTipErrorLogPath() const;
+    void prepareGradientEnergyLogging(const QString &filePath, qint64 startMs);
+    void finalizeGradientEnergyLogging();
+    void recordGradientEnergy(const cv::Mat &gray);
 
     CameraModule m_cameraModule;              ///< 封装的相机模块。
     ImageProcessor m_imageProcessorModule;    ///< 图像处理线程模块。
@@ -467,6 +472,23 @@ private:
     cv::Size m_recordingFrameSize; ///< 当前录屏使用的帧尺寸，确保不经过 UI 缩放。
     double m_recordingFps = 30.0;  ///< 录屏帧率，默认使用计时器推算值。
     QString m_recordingFilePath;   ///< 当前录屏文件的完整路径。
+    QString m_recordingSessionStamp; ///< 当前录屏会话时间戳，用于日志命名。
+
+    QMutex m_gradientLogMutex;     ///< 梯度能量记录互斥锁，确保跨线程安全。
+    QFile m_gradientLogFile;       ///< 梯度能量输出文件。
+    QTextStream m_gradientLogStream; ///< 梯度能量输出流。
+    QString m_gradientLogFilePath; ///< 梯度能量记录文件路径。
+    bool m_gradientLogPending = false; ///< 是否等待初始化梯度能量记录。
+    bool m_gradientLogActive = false;  ///< 梯度能量记录是否处于写入状态。
+    bool m_gradientLogStopRequested = false; ///< 梯度能量记录停止请求。
+    qint64 m_gradientLogStartMs = 0;   ///< 梯度能量记录开始时间（毫秒）。
+    qint64 m_gradientLogFrameIndex = 0; ///< 梯度能量记录帧计数。
+
+    QTimer m_microSnakeTimer;          ///< 微动关节蛇形扫描定时器。
+    std::vector<cv::Vec3i> m_microSnakePath; ///< 蛇形扫描轨迹序列。
+    int m_microSnakeIndex = 0;         ///< 蛇形扫描当前步序号。
+    bool m_microSnakeRunning = false;  ///< 蛇形扫描运行标记。
+    int m_microSnakeIntervalMs = 1000;  ///< 蛇形扫描发送间隔（毫秒）。
 
     // ====== 图像处理线程内的缓冲资源，避免每帧重复构造 ======
     cv::Mat m_cachedUndistortMap1;       ///< 上一次生成的去畸变映射表（x/y）。
@@ -482,6 +504,8 @@ private:
     void startMicroJog(const QPoint &direction);
     void stopMicroJog();
     void triggerMicroJogStep();
+    void stopMicroSnakeScan();
+    void handleMicroSnakeScanStep();
     void startTipErrorRecording(const QString &filePath);
     void stopTipErrorRecording();
     void writeTipErrorSample(const ImageProcessor::ProcessedImage &result);

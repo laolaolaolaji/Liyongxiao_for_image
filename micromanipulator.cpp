@@ -559,7 +559,6 @@ void Micromanipulator::on_BtnAutoFocus_clicked()
     bool intervalFound = false;
     int intervalStartZ = baseZ;
     int intervalEndZ = baseZ;
-    constexpr double kDropRatio = 0.08;
 
     for (int i = static_cast<int>(coarseTrace.size()); i < maxCoarseSteps; ++i) {
         FocusMeasureSample sample;
@@ -570,22 +569,16 @@ void Micromanipulator::on_BtnAutoFocus_clicked()
 
         coarseTrace.push_back(sample);
 
-        if (coarseTrace.size() < 3) {
+        if (coarseTrace.size() < 2) {
             continue;
         }
 
-        const auto &low1 = coarseTrace[coarseTrace.size() - 3];
-        const auto &peak = coarseTrace[coarseTrace.size() - 2];
-        const auto &low2 = coarseTrace[coarseTrace.size() - 1];
-        const double threshold = std::max(1e-6, peak.tenengrad * kDropRatio);
-
-        if (peak.tenengrad > low1.tenengrad
-            && peak.tenengrad > low2.tenengrad
-            && (peak.tenengrad - low1.tenengrad) >= threshold
-            && (peak.tenengrad - low2.tenengrad) >= threshold) {
+        const auto &prev = coarseTrace[coarseTrace.size() - 2];
+        const auto &curr = coarseTrace[coarseTrace.size() - 1];
+        if (curr.tenengrad < prev.tenengrad) {
             intervalFound = true;
-            intervalStartZ = low1.targetZ;
-            intervalEndZ = low2.targetZ;
+            intervalStartZ = prev.targetZ;
+            intervalEndZ = curr.targetZ;
             break;
         }
     }

@@ -392,6 +392,7 @@ private slots:
     void handleProcessedImage(const ImageProcessor::ProcessedImage &result);
     void on_BtnRecordVideo_clicked();
     void on_cBoxSmoothingMode_currentIndexChanged(int index);
+    void on_BtnFocusLog_clicked();
 
 private:
     ImageProcessor::ProcessedImage runImageProcessingPipeline(const ImageProcessor::FrameRequest &request);
@@ -436,6 +437,8 @@ private:
     double focusHighFrequencyEnergy(const cv::Mat &gray) const;
     QString buildDefaultFocusLogPath() const;
     QString buildDefaultTipErrorLogPath() const;
+    bool startFocusLogRecording(const QString &filePath);
+    void stopFocusLogRecording();
 
     CameraModule m_cameraModule;              ///< 封装的相机模块。
     ImageProcessor m_imageProcessorModule;    ///< 图像处理线程模块。
@@ -467,6 +470,12 @@ private:
     cv::Size m_recordingFrameSize; ///< 当前录屏使用的帧尺寸，确保不经过 UI 缩放。
     double m_recordingFps = 30.0;  ///< 录屏帧率，默认使用计时器推算值。
     QString m_recordingFilePath;   ///< 当前录屏文件的完整路径。
+
+    bool m_isFocusLogRecording = false; ///< 自动聚焦日志是否正在记录。
+    QFile m_focusLogFile; ///< 自动聚焦日志文件。
+    QTextStream m_focusLogStream; ///< 自动聚焦日志输出流。
+    QString m_focusLogFilePath; ///< 自动聚焦日志文件路径。
+    int m_focusLogIndex = 0; ///< 自动聚焦日志的记录序号。
 
     // ====== 图像处理线程内的缓冲资源，避免每帧重复构造 ======
     cv::Mat m_cachedUndistortMap1;       ///< 上一次生成的去畸变映射表（x/y）。

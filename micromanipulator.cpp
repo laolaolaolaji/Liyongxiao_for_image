@@ -4063,7 +4063,10 @@ cv::Rect Micromanipulator::buildFocusRoi(const cv::Mat &bgrFrame, cv::Mat &roiOu
 
     rawRoiCenter = roiCenter;
 
-    if (!m_hasFilteredFocusCenter) {
+    if (roiAnchoredToTip) {
+        m_filteredFocusCenter = roiCenter;
+        m_hasFilteredFocusCenter = true;
+    } else if (!m_hasFilteredFocusCenter) {
         m_filteredFocusCenter = roiCenter;
         m_hasFilteredFocusCenter = true;
     } else {

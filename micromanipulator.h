@@ -385,6 +385,7 @@ private slots:
     void on_Btn_KeepCenter_clicked();
     void on_BtnMoveC_clicked();
     void on_BtnMoveVia_clicked();
+    void on_BtnMoveToPixel_clicked();
 
     void handleCameraOpened();
     void handleCameraClosed();
@@ -394,6 +395,7 @@ private slots:
     void on_cBoxSmoothingMode_currentIndexChanged(int index);
 
 private:
+    void triggerMicroArmMoveForPixel(int pixelX, int pixelY);
     ImageProcessor::ProcessedImage runImageProcessingPipeline(const ImageProcessor::FrameRequest &request);
     bool startRecording(const cv::Size &frameSize, double fps);
     void stopRecording();

@@ -107,15 +107,15 @@ inline void fitPhaseWithAlpha(const std::vector<cv::Point2d> &points,
 }
 
 /**
- * @brief 根据拟合结果构造 3x3 L 矩阵。
+ * @brief 根据拟合结果构造 3x4 L 矩阵。
  */
-inline cv::Mat buildL(double cx, double cy, double radius, double phi, double z0)
+inline cv::Mat buildL(double cx, double cy, double radius, double phi, double zIntercept, double zSlope)
 {
     const double c = std::cos(phi);
     const double s = std::sin(phi);
-    return (cv::Mat_<double>(3, 3) << cx, radius * c, -radius * s,
-            cy, radius * s, radius * c,
-            z0, 0.0, 0.0);
+    return (cv::Mat_<double>(3, 4) << cx, radius * c, -radius * s, 0.0,
+            cy, radius * s, radius * c, 0.0,
+            zIntercept, 0.0, 0.0, zSlope);
 }
 
 /**
@@ -139,16 +139,34 @@ cv::Mat fitCircle2DGeometryThenAlpha(const std::vector<cv::Vec4d> &pts,
         return cv::Mat();
     }
 
-    // 步骤 1：拆分几何信息和角度信息，累计 z 用于求平均平面高度。
+    // 步骤 1：拆分几何信息和角度信息，拟合 z = k * alpha + b。
     std::vector<cv::Point2d> points(n);
     std::vector<double> alphas(n);
-    double z0 = 0.0;
+    std::vector<double> zs(n);
     for (int i = 0; i < n; ++i) {
         points[i] = {pts[i][0], pts[i][1]};
         alphas[i] = pts[i][3];
-        z0 += pts[i][2];
+        zs[i] = pts[i][2];
     }
-    z0 /= n;
+
+    double alphaMean = 0.0;
+    double zMean = 0.0;
+    for (int i = 0; i < n; ++i) {
+        alphaMean += alphas[i];
+        zMean += zs[i];
+    }
+    alphaMean /= n;
+    zMean /= n;
+
+    double denom = 0.0;
+    double numer = 0.0;
+    for (int i = 0; i < n; ++i) {
+        const double da = alphas[i] - alphaMean;
+        denom += da * da;
+        numer += da * (zs[i] - zMean);
+    }
+    const double zSlope = (std::abs(denom) > 1e-9) ? (numer / denom) : 0.0;
+    const double zIntercept = zMean - zSlope * alphaMean;
 
     // 步骤 2：只根据 (x,y) 拟合圆心和半径。
     double cxLocal = 0.0;
@@ -171,7 +189,7 @@ cv::Mat fitCircle2DGeometryThenAlpha(const std::vector<cv::Vec4d> &pts,
     if (rmseAlpha) *rmseAlpha = rmseLocal;
 
     // 步骤 5：生成最终 L 矩阵。
-    cv::Mat L = buildL(cxLocal, cyLocal, rLocal, phiLocal, z0);
+    cv::Mat L = buildL(cxLocal, cyLocal, rLocal, phiLocal, zIntercept, zSlope);
 
     if (print) {
         // 步骤 6：输出调试信息，包含半径一致性与 L 矩阵内容。
@@ -197,10 +215,11 @@ cv::Mat fitCircle2DGeometryThenAlpha(const std::vector<cv::Vec4d> &pts,
         qInfo() << "半径 r =" << rLocal << "(半径std=" << stdR << ')';
         qInfo() << "相位 φ(rad)=" << phiLocal << "方向s=" << directionLocal
                 << "α配准RMSE=" << rmseLocal << "rad";
-        qInfo() << "L(3x3):\n"
-                << L.at<double>(0, 0) << L.at<double>(0, 1) << L.at<double>(0, 2) << '\n'
-                << L.at<double>(1, 0) << L.at<double>(1, 1) << L.at<double>(1, 2) << '\n'
-                << L.at<double>(2, 0) << L.at<double>(2, 1) << L.at<double>(2, 2);
+        qInfo() << "z 拟合: z = " << zSlope << " * alpha + " << zIntercept;
+        qInfo() << "L(3x4):\n"
+                << L.at<double>(0, 0) << L.at<double>(0, 1) << L.at<double>(0, 2) << L.at<double>(0, 3) << '\n'
+                << L.at<double>(1, 0) << L.at<double>(1, 1) << L.at<double>(1, 2) << L.at<double>(1, 3) << '\n'
+                << L.at<double>(2, 0) << L.at<double>(2, 1) << L.at<double>(2, 2) << L.at<double>(2, 3);
     }
 
     return L;
@@ -438,18 +457,20 @@ bool MacroMicroController::executeYawArcMove(int currentAngleMilli,
     alphaMapping.convertTo(alphaL, CV_64F);
 
     // Step 3：使用 L(α) 预测 via 点和终点的笛卡尔位姿。
-    cv::Mat viaVector = (cv::Mat_<double>(3, 1) << 1.0,
+    cv::Mat viaVector = (cv::Mat_<double>(4, 1) << 1.0,
                          std::cos(alphaVia),
-                         std::sin(alphaVia));
+                         std::sin(alphaVia),
+                         alphaVia);
     cv::Mat viaPose = alphaL * viaVector;
 
     const int viaX = qRound(viaPose.at<double>(0));
     const int viaY = qRound(viaPose.at<double>(1));
     const int viaZ = qRound(viaPose.at<double>(2));
 
-    cv::Mat finalVector = (cv::Mat_<double>(3, 1) << 1.0,
+    cv::Mat finalVector = (cv::Mat_<double>(4, 1) << 1.0,
                            std::cos(alphaFinal),
-                           std::sin(alphaFinal));
+                           std::sin(alphaFinal),
+                           alphaFinal);
     cv::Mat finalPose = alphaL * finalVector;
 
     const int finalX = qRound(finalPose.at<double>(0));

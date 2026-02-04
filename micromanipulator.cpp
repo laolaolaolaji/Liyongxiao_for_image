@@ -129,12 +129,12 @@ Micromanipulator::Micromanipulator(QWidget *parent)
 
 
 
-    // 你的 5 个点（弧度从 -2 到 -1）
+    // 你的 5 个点（弧度从 -2 到 -1，z 随 α 线性变化）
     std::vector<cv::Vec4d> pts;
-    pts.emplace_back(-327974, -35530, 156411, -2.00);
-    pts.emplace_back(-286014, -22750, 156411, -1.75);
-    pts.emplace_back(-248000,      0, 156411, -1.50);
-    pts.emplace_back(-216889,  31534, 156411, -1.25);
+    pts.emplace_back(-327974, -35530, 157211, -2.00);
+    pts.emplace_back(-286014, -22750, 156811, -1.75);
+    pts.emplace_back(-248000,      0, 156811, -1.50);
+    pts.emplace_back(-216889,  31534, 156611, -1.25);
     pts.emplace_back(-193813,  70558, 156411, -1.00);
 
 
@@ -143,9 +143,9 @@ Micromanipulator::Micromanipulator(QWidget *parent)
     double cx, cy, r, phi, rmseAlpha; int sgn;
     alpha_L = m_macroMicroController.fitYawCircleMapping(pts, &cx, &cy, &r, &phi, &sgn, &rmseAlpha, true);
 
-    // 用 L 预测 α=-1.77 的点：xyz = L · [1,cosα,sinα]^T
+    // 用 L 预测 α=-1.77 的点：xyz = L · [1,cosα,sinα,α]^T
     const double alpha_pred = -1.77;
-    cv::Mat v = (cv::Mat_<double>(3,1) << 1.0, std::cos(alpha_pred), std::sin(alpha_pred));
+    cv::Mat v = (cv::Mat_<double>(4,1) << 1.0, std::cos(alpha_pred), std::sin(alpha_pred), alpha_pred);
     cv::Mat xyz = alpha_L * v;
     qDebug() << "预测 α=" << alpha_pred << " -> x,y,z = "
               << xyz.at<double>(0) << ", "

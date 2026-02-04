@@ -3580,95 +3580,113 @@ bool Micromanipulator::eventFilter(QObject *obj, QEvent *event)
             clicked_imgY = int(pos.y() * scaleY);
 
             qDebug() << "点击像素坐标:" << clicked_imgX << clicked_imgY;
-            ui->cameraTipPosition->setText(
-                "(" + QString::number(clicked_imgX) + "," + QString::number(clicked_imgY) + ")"
-                );
+            triggerMicroArmMoveForPixel(clicked_imgX, clicked_imgY);
         }
-
-
-        if (!H1.empty()) {
-            // === ① 先用上一轮数据更新 H1_linear ===
-
-            // ADD: 若 H1_linear 还没初始化（全 0），从 H1 拆 2x2 过来
-            if (H1_linear(0,0)==0 && H1_linear(0,1)==0 &&
-                H1_linear(1,0)==0 && H1_linear(1,1)==0) {
-                H1.convertTo(H1, CV_64F);
-                H1_linear = cv::Matx22d(H1.at<double>(0,0), H1.at<double>(0,1),
-                                        H1.at<double>(1,0), H1.at<double>(1,1));
-            }
-
-            // 在线修正（可选算法）
-            if (has_last_sample) {
-                cv::Vec2d delta_pixel(
-                    VisualPosition_X - last_visual.x,
-                    VisualPosition_Y - last_visual.y
-                    );
-                if (cv::norm(delta_pixel) > 0.5) { // 小于0.5像素就忽略
-                    online_samples.emplace_back(delta_pixel, last_delta_arm);
-                    if ((int)online_samples.size() > swls_window_size) {
-                        online_samples.pop_front();
-                    }
-
-                    switch (online_update_method) {
-                    case OnlineUpdateMethod::Broyden:
-                        H1_linear = updateMappingBroyden(
-                            H1_linear, delta_pixel, last_delta_arm,
-                            lambda_broyden, gamma_broyden
-                            );
-                        break;
-                    case OnlineUpdateMethod::SlidingWindowLeastSquares:
-                        H1_linear = updateMappingSwls(
-                            online_samples, H1_linear, swls_ridge
-                            );
-                        break;
-                    case OnlineUpdateMethod::RecursiveLeastSquaresFF:
-                        H1_linear = updateMappingRlsFf(
-                            delta_pixel, last_delta_arm,
-                            rls_forgetting_factor, rls_initial_cov,
-                            H1_linear, rls_theta, rls_cov, rls_initialized
-                            );
-                        break;
-                    }
-                }
-                has_last_sample = false;
-            }
-
-
-
-            // === ② 当前点击误差 → 机械臂差值 ===
-            cv::Vec2d delta_pixel_target(
-                clicked_imgX - VisualPosition_X,
-                clicked_imgY - VisualPosition_Y
-                );
-            cv::Vec2d delta_arm_cmd = H1_linear * delta_pixel_target;
-
-            int dert_x = std::round(delta_arm_cmd[0]);
-            int dert_y = std::round(delta_arm_cmd[1]);
-
-            qDebug() << "映射机械臂坐标差值:" << dert_x << dert_y;
-            if (m_microArmModule.moveToPose(dert_x + mic_X, dert_y + mic_Y, 0))
-            {
-                mic_X += dert_x;
-                mic_Y += dert_y;
-                mic_Z = 0;
-            }
-
-            ui->robotTipPosition->setText(
-                "映射机械臂：(" + QString::number(dert_x + mic_X) + "," +
-                QString::number(dert_y + mic_Y) + ")"
-                );
-
-            // === ③ 保存本次参考，供下次更新使用 ===
-            last_visual = cv::Point2d(VisualPosition_X, VisualPosition_Y);
-            last_delta_arm = delta_arm_cmd;
-            has_last_sample = true;
-        }
-
-
-
         return true; // 事件已处理
     }
     return QMainWindow::eventFilter(obj, event); // 交给父类处理其他事件
+}
+
+void Micromanipulator::triggerMicroArmMoveForPixel(int pixelX, int pixelY)
+{
+    clicked_imgX = pixelX;
+    clicked_imgY = pixelY;
+    ui->cameraTipPosition->setText(
+        "(" + QString::number(clicked_imgX) + "," + QString::number(clicked_imgY) + ")"
+        );
+
+    if (H1.empty()) {
+        qWarning() << "triggerMicroArmMoveForPixel -> H1 mapping missing";
+        return;
+    }
+
+    // === ① 先用上一轮数据更新 H1_linear ===
+
+    // ADD: 若 H1_linear 还没初始化（全 0），从 H1 拆 2x2 过来
+    if (H1_linear(0,0)==0 && H1_linear(0,1)==0 &&
+        H1_linear(1,0)==0 && H1_linear(1,1)==0) {
+        H1.convertTo(H1, CV_64F);
+        H1_linear = cv::Matx22d(H1.at<double>(0,0), H1.at<double>(0,1),
+                                H1.at<double>(1,0), H1.at<double>(1,1));
+    }
+
+    // 在线修正（可选算法）
+    if (has_last_sample) {
+        cv::Vec2d delta_pixel(
+            VisualPosition_X - last_visual.x,
+            VisualPosition_Y - last_visual.y
+            );
+        if (cv::norm(delta_pixel) > 0.5) { // 小于0.5像素就忽略
+            online_samples.emplace_back(delta_pixel, last_delta_arm);
+            if ((int)online_samples.size() > swls_window_size) {
+                online_samples.pop_front();
+            }
+
+            switch (online_update_method) {
+            case OnlineUpdateMethod::Broyden:
+                H1_linear = updateMappingBroyden(
+                    H1_linear, delta_pixel, last_delta_arm,
+                    lambda_broyden, gamma_broyden
+                    );
+                break;
+            case OnlineUpdateMethod::SlidingWindowLeastSquares:
+                H1_linear = updateMappingSwls(
+                    online_samples, H1_linear, swls_ridge
+                    );
+                break;
+            case OnlineUpdateMethod::RecursiveLeastSquaresFF:
+                H1_linear = updateMappingRlsFf(
+                    delta_pixel, last_delta_arm,
+                    rls_forgetting_factor, rls_initial_cov,
+                    H1_linear, rls_theta, rls_cov, rls_initialized
+                    );
+                break;
+            }
+        }
+        has_last_sample = false;
+    }
+
+    // === ② 当前点击误差 → 机械臂差值 ===
+    cv::Vec2d delta_pixel_target(
+        clicked_imgX - VisualPosition_X,
+        clicked_imgY - VisualPosition_Y
+        );
+    cv::Vec2d delta_arm_cmd = H1_linear * delta_pixel_target;
+
+    int dert_x = std::round(delta_arm_cmd[0]);
+    int dert_y = std::round(delta_arm_cmd[1]);
+
+    qDebug() << "映射机械臂坐标差值:" << dert_x << dert_y;
+    if (m_microArmModule.moveToPose(dert_x + mic_X, dert_y + mic_Y, 0))
+    {
+        mic_X += dert_x;
+        mic_Y += dert_y;
+        mic_Z = 0;
+    }
+
+    ui->robotTipPosition->setText(
+        "映射机械臂：(" + QString::number(dert_x + mic_X) + "," +
+        QString::number(dert_y + mic_Y) + ")"
+        );
+
+    // === ③ 保存本次参考，供下次更新使用 ===
+    last_visual = cv::Point2d(VisualPosition_X, VisualPosition_Y);
+    last_delta_arm = delta_arm_cmd;
+    has_last_sample = true;
+}
+
+void Micromanipulator::on_BtnMoveToPixel_clicked()
+{
+    bool okX = false;
+    bool okY = false;
+    const int pixelX = ui->PixelXInput->text().trimmed().toInt(&okX);
+    const int pixelY = ui->PixelYInput->text().trimmed().toInt(&okY);
+    if (!okX || !okY) {
+        qWarning() << "on_BtnMoveToPixel_clicked -> invalid pixel input";
+        return;
+    }
+
+    triggerMicroArmMoveForPixel(pixelX, pixelY);
 }
 
 void Micromanipulator::on_BtnMoveVia_clicked()

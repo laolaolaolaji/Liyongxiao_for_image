@@ -716,6 +716,38 @@
          </item>
         </layout>
        </item>
+       <item row="3" column="0">
+        <layout class="QHBoxLayout" name="horizontalLayout_PixelMove">
+         <item>
+          <widget class="QLabel" name="label_PixelMove">
+           <property name="text">
+            <string>像素坐标:</string>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QLineEdit" name="PixelXInput">
+           <property name="placeholderText">
+            <string>X</string>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QLineEdit" name="PixelYInput">
+           <property name="placeholderText">
+            <string>Y</string>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QPushButton" name="BtnMoveToPixel">
+           <property name="text">
+            <string>像素点移动</string>
+           </property>
+          </widget>
+         </item>
+        </layout>
+       </item>
       </layout>
      </widget>
     </widget>

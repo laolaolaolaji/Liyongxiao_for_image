@@ -719,6 +719,27 @@
        <item row="3" column="0">
         <layout class="QHBoxLayout" name="horizontalLayout_PixelMove">
          <item>
+          <widget class="QLabel" name="label_ClickDriveMode">
+           <property name="text">
+            <string>点击驱动模式:</string>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QComboBox" name="comboClickDriveMode">
+           <item>
+            <property name="text">
+             <string>点到哪里走到哪里（单击）</string>
+            </property>
+           </item>
+           <item>
+            <property name="text">
+             <string>双击定起终点（两次点击）</string>
+            </property>
+           </item>
+          </widget>
+         </item>
+         <item>
           <widget class="QLabel" name="label_PixelMove">
            <property name="text">
             <string>像素坐标:</string>

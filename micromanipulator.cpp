@@ -57,6 +57,8 @@ Micromanipulator::Micromanipulator(QWidget *parent)
     ui->cBoxSmoothingMode->addItem(QStringLiteral("卡尔曼滤波"));
     }
     ui->cBoxSmoothingMode->setCurrentIndex(static_cast<int>(m_tipSmoothingMode));
+    ui->comboClickDriveMode->setCurrentIndex(static_cast<int>(m_clickDriveMode));
+
 
     // 在线矩阵修正算法选择与参数绑定
     if (ui->comboOnlineUpdateMethod->count() == 0) {
@@ -3566,21 +3568,34 @@ bool Micromanipulator::eventFilter(QObject *obj, QEvent *event)
 {
     if (obj == ui->CameraShow && event->type() == QEvent::MouseButtonPress) {
         QMouseEvent *mouseEvent = static_cast<QMouseEvent*>(event);
-        QPoint pos = mouseEvent->pos();   // 点击点在 QLabel 内部的坐标
+        const QPoint pos = mouseEvent->pos();   // 点击点在 QLabel 内部的坐标
 
         QPixmap pm = ui->CameraShow->pixmap();
         if (!pm.isNull()) {
-            QSize imgSize = pm.size();                  // 图像实际像素大小
-            QSize lblSize = ui->CameraShow->size();     // QLabel 的显示大小
+            const QSize imgSize = pm.size();                   // 图像实际像素大小
+            const QSize lblSize = ui->CameraShow->size();      // QLabel 的显示大小
 
-            double scaleX = double(imgSize.width()) / lblSize.width();
-            double scaleY = double(imgSize.height()) / lblSize.height();
+            const double scaleX = double(imgSize.width()) / lblSize.width();
+            const double scaleY = double(imgSize.height()) / lblSize.height();
+            const cv::Point2i clickedPixel(int(pos.x() * scaleX), int(pos.y() * scaleY));
 
-            clicked_imgX = int(pos.x() * scaleX);
-            clicked_imgY = int(pos.y() * scaleY);
+            qDebug() << "点击像素坐标:" << clickedPixel.x << clickedPixel.y;
 
-            qDebug() << "点击像素坐标:" << clicked_imgX << clicked_imgY;
-            triggerMicroArmMoveForPixel(clicked_imgX, clicked_imgY);
+            if (m_clickDriveMode == ClickDriveMode::TrackTipSingleClick) {
+                triggerMicroArmMoveForPixel(clickedPixel.x, clickedPixel.y);
+            } else {
+                if (!m_pendingTwoClickStart) {
+                    m_twoClickStartPixel = clickedPixel;
+                    m_pendingTwoClickStart = true;
+                    ui->FeedBack->setText(
+                        QStringLiteral("双击模式：已记录起点(%1,%2)，请点击终点")
+                            .arg(clickedPixel.x)
+                            .arg(clickedPixel.y));
+                } else {
+                    triggerMicroArmMoveByPixels(m_twoClickStartPixel, clickedPixel, false);
+                    m_pendingTwoClickStart = false;
+                }
+            }
         }
         return true; // 事件已处理
     }
@@ -3589,14 +3604,24 @@ bool Micromanipulator::eventFilter(QObject *obj, QEvent *event)
 
 void Micromanipulator::triggerMicroArmMoveForPixel(int pixelX, int pixelY)
 {
-    clicked_imgX = pixelX;
-    clicked_imgY = pixelY;
+    const cv::Point2i targetPixel(pixelX, pixelY);
+    const cv::Point2i sourcePixel(VisualPosition_X, VisualPosition_Y);
+    triggerMicroArmMoveByPixels(sourcePixel, targetPixel, true);
+}
+
+void Micromanipulator::triggerMicroArmMoveByPixels(const cv::Point2i &sourcePixel,
+                                                   const cv::Point2i &targetPixel,
+                                                   bool useTargetForDisplay)
+{
+    clicked_imgX = targetPixel.x;
+    clicked_imgY = targetPixel.y;
+    const cv::Point2i displayPixel = useTargetForDisplay ? targetPixel : sourcePixel;
     ui->cameraTipPosition->setText(
-        "(" + QString::number(clicked_imgX) + "," + QString::number(clicked_imgY) + ")"
+        "(" + QString::number(displayPixel.x) + "," + QString::number(displayPixel.y) + ")"
         );
 
     if (H1.empty()) {
-        qWarning() << "triggerMicroArmMoveForPixel -> H1 mapping missing";
+        qWarning() << "triggerMicroArmMoveByPixels -> H1 mapping missing";
         return;
     }
 
@@ -3613,8 +3638,8 @@ void Micromanipulator::triggerMicroArmMoveForPixel(int pixelX, int pixelY)
     // 在线修正（可选算法）
     if (has_last_sample) {
         cv::Vec2d delta_pixel(
-            VisualPosition_X - last_visual.x,
-            VisualPosition_Y - last_visual.y
+            sourcePixel.x - last_visual.x,
+            sourcePixel.y - last_visual.y
             );
         if (cv::norm(delta_pixel) > 0.5) { // 小于0.5像素就忽略
             online_samples.emplace_back(delta_pixel, last_delta_arm);
@@ -3648,8 +3673,8 @@ void Micromanipulator::triggerMicroArmMoveForPixel(int pixelX, int pixelY)
 
     // === ② 当前点击误差 → 机械臂差值 ===
     cv::Vec2d delta_pixel_target(
-        clicked_imgX - VisualPosition_X,
-        clicked_imgY - VisualPosition_Y
+        targetPixel.x - sourcePixel.x,
+        targetPixel.y - sourcePixel.y
         );
     cv::Vec2d delta_arm_cmd = H1_linear * delta_pixel_target;
 
@@ -3657,22 +3682,37 @@ void Micromanipulator::triggerMicroArmMoveForPixel(int pixelX, int pixelY)
     int dert_y = std::round(delta_arm_cmd[1]);
 
     qDebug() << "映射机械臂坐标差值:" << dert_x << dert_y;
-    if (m_microArmModule.moveToPose(dert_x + mic_X, dert_y + mic_Y, 0))
+    const int targetMicX = dert_x + mic_X;
+    const int targetMicY = dert_y + mic_Y;
+    if (m_microArmModule.moveToPose(targetMicX, targetMicY, 0))
     {
-        mic_X += dert_x;
-        mic_Y += dert_y;
+        mic_X = targetMicX;
+        mic_Y = targetMicY;
         mic_Z = 0;
     }
 
     ui->robotTipPosition->setText(
-        "映射机械臂：(" + QString::number(dert_x + mic_X) + "," +
-        QString::number(dert_y + mic_Y) + ")"
+        "映射机械臂：(" + QString::number(mic_X) + "," +
+        QString::number(mic_Y) + ")"
         );
 
     // === ③ 保存本次参考，供下次更新使用 ===
-    last_visual = cv::Point2d(VisualPosition_X, VisualPosition_Y);
+    last_visual = cv::Point2d(sourcePixel.x, sourcePixel.y);
     last_delta_arm = delta_arm_cmd;
     has_last_sample = true;
+}
+
+void Micromanipulator::on_comboClickDriveMode_currentIndexChanged(int index)
+{
+    m_clickDriveMode = (index == static_cast<int>(ClickDriveMode::TwoClickDelta))
+                           ? ClickDriveMode::TwoClickDelta
+                           : ClickDriveMode::TrackTipSingleClick;
+    m_pendingTwoClickStart = false;
+    if (m_clickDriveMode == ClickDriveMode::TwoClickDelta) {
+        ui->FeedBack->setText(QStringLiteral("双击模式：请先点击针尖起点，再点击终点"));
+    } else {
+        ui->FeedBack->setText(QStringLiteral("单击模式：点到哪里走到哪里"));
+    }
 }
 
 void Micromanipulator::on_BtnMoveToPixel_clicked()

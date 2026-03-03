@@ -66,6 +66,11 @@ public:
 private:
     Ui::Micromanipulator *ui;
     QButtonGroup *m_displayModeGroup = nullptr; ///< 单选按钮分组，确保图像显示模式互斥。
+    enum class ClickDriveMode
+    {
+        TrackTipSingleClick = 0, ///< 传统模式：以实时识别的针尖像素为起点，单击目标即驱动。
+        TwoClickDelta = 1        ///< 新模式：两次点击分别给出起点/终点，再换算驱动。
+    };
 
 private slots:
     void on_BtnCameraOnOff_clicked();
@@ -310,6 +315,9 @@ public:
     int mic_X = 0, mic_Y = 0, mic_Z = 0;
     bool eventFilter(QObject *obj, QEvent *event);
     int clicked_imgX, clicked_imgY;
+    ClickDriveMode m_clickDriveMode = ClickDriveMode::TrackTipSingleClick; ///< 点击驱动模式。
+    bool m_pendingTwoClickStart = false; ///< 双击模式下是否已记录首点、等待第二次点击。
+    cv::Point2i m_twoClickStartPixel = cv::Point2i(0, 0); ///< 双击模式首点（起始针尖像素）。
 
     double  alpha_calib_rad;  // 标定时的 RZ 角（弧度）
 
@@ -386,6 +394,7 @@ private slots:
     void on_BtnMoveC_clicked();
     void on_BtnMoveVia_clicked();
     void on_BtnMoveToPixel_clicked();
+    void on_comboClickDriveMode_currentIndexChanged(int index);
 
     void handleCameraOpened();
     void handleCameraClosed();
@@ -396,6 +405,9 @@ private slots:
 
 private:
     void triggerMicroArmMoveForPixel(int pixelX, int pixelY);
+    void triggerMicroArmMoveByPixels(const cv::Point2i &sourcePixel,
+                                     const cv::Point2i &targetPixel,
+                                     bool useTargetForDisplay = true);
     ImageProcessor::ProcessedImage runImageProcessingPipeline(const ImageProcessor::FrameRequest &request);
     bool startRecording(const cv::Size &frameSize, double fps);
     void stopRecording();

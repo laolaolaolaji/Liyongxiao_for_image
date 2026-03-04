@@ -3644,11 +3644,29 @@ void Micromanipulator::triggerMicroArmMoveByPixels(const cv::Point2i &sourcePixe
         if (isTwoClickCommand) {
             // 双击模式禁止使用视觉反馈；仅使用“第k次终点点击 -> 第k+1次起点点击”的像素变化做修正。
             if (m_lastCommandFromTwoClickMode && m_hasLastTwoClickTargetPixel) {
-                delta_pixel = cv::Vec2d(
+                cv::Vec2d measured_delta_pixel(
                     sourcePixel.x - m_lastTwoClickTargetPixel.x,
                     sourcePixel.y - m_lastTwoClickTargetPixel.y
                     );
-                hasValidDeltaPixel = true;
+
+                // 通过“上一次已下发机械臂位移 + 当前H1线性映射”反推期望像素位移，
+                // 对点击偏差导致的异常残差做限幅，避免双击修正被针尖圆头选点漂移放大。
+                cv::Vec2d predicted_delta_pixel = measured_delta_pixel;
+                const double detH = H1_linear(0,0) * H1_linear(1,1) - H1_linear(0,1) * H1_linear(1,0);
+                if (std::abs(detH) > 1e-9) {
+                    predicted_delta_pixel = H1_linear.inv() * last_delta_arm;
+                }
+
+                cv::Vec2d residual = measured_delta_pixel - predicted_delta_pixel;
+                const double residualNorm = cv::norm(residual);
+                if (residualNorm > m_twoClickResidualClampPixels && residualNorm > 1e-12) {
+                    residual *= (m_twoClickResidualClampPixels / residualNorm);
+                }
+
+                const cv::Vec2d robustMeasured = predicted_delta_pixel + residual;
+                const double blend = std::clamp(m_twoClickUsePredictedBlend, 0.0, 1.0);
+                delta_pixel = (1.0 - blend) * robustMeasured + blend * predicted_delta_pixel;
+                hasValidDeltaPixel = (cv::norm(delta_pixel) > m_twoClickDeltaMinPixels);
             }
         } else {
             // 单击模式沿用原有视觉反馈修正。
@@ -3659,7 +3677,7 @@ void Micromanipulator::triggerMicroArmMoveByPixels(const cv::Point2i &sourcePixe
             hasValidDeltaPixel = true;
         }
 
-        if (hasValidDeltaPixel && cv::norm(delta_pixel) > 0.5) { // 小于0.5像素就忽略
+        if (hasValidDeltaPixel && cv::norm(delta_pixel) > 0.5) { // 统一兜底阈值（双击模式还会叠加最小位移阈值）
             online_samples.emplace_back(delta_pixel, last_delta_arm);
             if ((int)online_samples.size() > swls_window_size) {
                 online_samples.pop_front();

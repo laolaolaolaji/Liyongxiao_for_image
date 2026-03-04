@@ -3592,7 +3592,7 @@ bool Micromanipulator::eventFilter(QObject *obj, QEvent *event)
                             .arg(clickedPixel.x)
                             .arg(clickedPixel.y));
                 } else {
-                    triggerMicroArmMoveByPixels(m_twoClickStartPixel, clickedPixel, false);
+                    triggerMicroArmMoveByPixels(m_twoClickStartPixel, clickedPixel, false, true);
                     m_pendingTwoClickStart = false;
                 }
             }
@@ -3606,12 +3606,13 @@ void Micromanipulator::triggerMicroArmMoveForPixel(int pixelX, int pixelY)
 {
     const cv::Point2i targetPixel(pixelX, pixelY);
     const cv::Point2i sourcePixel(VisualPosition_X, VisualPosition_Y);
-    triggerMicroArmMoveByPixels(sourcePixel, targetPixel, true);
+    triggerMicroArmMoveByPixels(sourcePixel, targetPixel, true, false);
 }
 
 void Micromanipulator::triggerMicroArmMoveByPixels(const cv::Point2i &sourcePixel,
                                                    const cv::Point2i &targetPixel,
-                                                   bool useTargetForDisplay)
+                                                   bool useTargetForDisplay,
+                                                   bool isTwoClickCommand)
 {
     clicked_imgX = targetPixel.x;
     clicked_imgY = targetPixel.y;
@@ -3637,11 +3638,28 @@ void Micromanipulator::triggerMicroArmMoveByPixels(const cv::Point2i &sourcePixe
 
     // 在线修正（可选算法）
     if (has_last_sample) {
-        cv::Vec2d delta_pixel(
-            sourcePixel.x - last_visual.x,
-            sourcePixel.y - last_visual.y
-            );
-        if (cv::norm(delta_pixel) > 0.5) { // 小于0.5像素就忽略
+        cv::Vec2d delta_pixel(0.0, 0.0);
+        bool hasValidDeltaPixel = false;
+
+        if (isTwoClickCommand) {
+            // 双击模式禁止使用视觉反馈；仅使用“第k次终点点击 -> 第k+1次起点点击”的像素变化做修正。
+            if (m_lastCommandFromTwoClickMode && m_hasLastTwoClickTargetPixel) {
+                delta_pixel = cv::Vec2d(
+                    sourcePixel.x - m_lastTwoClickTargetPixel.x,
+                    sourcePixel.y - m_lastTwoClickTargetPixel.y
+                    );
+                hasValidDeltaPixel = true;
+            }
+        } else {
+            // 单击模式沿用原有视觉反馈修正。
+            delta_pixel = cv::Vec2d(
+                sourcePixel.x - last_visual.x,
+                sourcePixel.y - last_visual.y
+                );
+            hasValidDeltaPixel = true;
+        }
+
+        if (hasValidDeltaPixel && cv::norm(delta_pixel) > 0.5) { // 小于0.5像素就忽略
             online_samples.emplace_back(delta_pixel, last_delta_arm);
             if ((int)online_samples.size() > swls_window_size) {
                 online_samples.pop_front();
@@ -3700,6 +3718,11 @@ void Micromanipulator::triggerMicroArmMoveByPixels(const cv::Point2i &sourcePixe
     last_visual = cv::Point2d(sourcePixel.x, sourcePixel.y);
     last_delta_arm = delta_arm_cmd;
     has_last_sample = true;
+    m_lastCommandFromTwoClickMode = isTwoClickCommand;
+    if (isTwoClickCommand) {
+        m_lastTwoClickTargetPixel = targetPixel;
+        m_hasLastTwoClickTargetPixel = true;
+    }
 }
 
 void Micromanipulator::on_comboClickDriveMode_currentIndexChanged(int index)
@@ -3708,6 +3731,8 @@ void Micromanipulator::on_comboClickDriveMode_currentIndexChanged(int index)
                            ? ClickDriveMode::TwoClickDelta
                            : ClickDriveMode::TrackTipSingleClick;
     m_pendingTwoClickStart = false;
+    m_lastCommandFromTwoClickMode = false;
+    m_hasLastTwoClickTargetPixel = false;
     if (m_clickDriveMode == ClickDriveMode::TwoClickDelta) {
         ui->FeedBack->setText(QStringLiteral("双击模式：请先点击针尖起点，再点击终点"));
     } else {

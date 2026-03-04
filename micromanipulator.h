@@ -318,6 +318,9 @@ public:
     ClickDriveMode m_clickDriveMode = ClickDriveMode::TrackTipSingleClick; ///< 点击驱动模式。
     bool m_pendingTwoClickStart = false; ///< 双击模式下是否已记录首点、等待第二次点击。
     cv::Point2i m_twoClickStartPixel = cv::Point2i(0, 0); ///< 双击模式首点（起始针尖像素）。
+    cv::Point2i m_lastTwoClickTargetPixel = cv::Point2i(0, 0); ///< 上一次双击模式的终点像素（k次目标）。
+    bool m_hasLastTwoClickTargetPixel = false; ///< 是否已记录上一次双击终点像素。
+    bool m_lastCommandFromTwoClickMode = false; ///< 上一次驱动命令是否来自双击模式。
 
     double  alpha_calib_rad;  // 标定时的 RZ 角（弧度）
 
@@ -407,7 +410,8 @@ private:
     void triggerMicroArmMoveForPixel(int pixelX, int pixelY);
     void triggerMicroArmMoveByPixels(const cv::Point2i &sourcePixel,
                                      const cv::Point2i &targetPixel,
-                                     bool useTargetForDisplay = true);
+                                     bool useTargetForDisplay = true,
+                                     bool isTwoClickCommand = false);
     ImageProcessor::ProcessedImage runImageProcessingPipeline(const ImageProcessor::FrameRequest &request);
     bool startRecording(const cv::Size &frameSize, double fps);
     void stopRecording();

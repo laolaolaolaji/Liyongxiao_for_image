@@ -3637,47 +3637,14 @@ void Micromanipulator::triggerMicroArmMoveByPixels(const cv::Point2i &sourcePixe
     }
 
     // 在线修正（可选算法）
-    if (has_last_sample) {
-        cv::Vec2d delta_pixel(0.0, 0.0);
-        bool hasValidDeltaPixel = false;
+    // 约定：仅单击模式参与在线修正；双击模式只沿用当前修正后的矩阵，不更新矩阵。
+    if (!isTwoClickCommand && has_last_sample) {
+        cv::Vec2d delta_pixel(
+            sourcePixel.x - last_visual.x,
+            sourcePixel.y - last_visual.y
+            );
 
-        if (isTwoClickCommand) {
-            // 双击模式禁止使用视觉反馈；仅使用“第k次终点点击 -> 第k+1次起点点击”的像素变化做修正。
-            if (m_lastCommandFromTwoClickMode && m_hasLastTwoClickTargetPixel) {
-                cv::Vec2d measured_delta_pixel(
-                    sourcePixel.x - m_lastTwoClickTargetPixel.x,
-                    sourcePixel.y - m_lastTwoClickTargetPixel.y
-                    );
-
-                // 通过“上一次已下发机械臂位移 + 当前H1线性映射”反推期望像素位移，
-                // 对点击偏差导致的异常残差做限幅，避免双击修正被针尖圆头选点漂移放大。
-                cv::Vec2d predicted_delta_pixel = measured_delta_pixel;
-                const double detH = H1_linear(0,0) * H1_linear(1,1) - H1_linear(0,1) * H1_linear(1,0);
-                if (std::abs(detH) > 1e-9) {
-                    predicted_delta_pixel = H1_linear.inv() * last_delta_arm;
-                }
-
-                cv::Vec2d residual = measured_delta_pixel - predicted_delta_pixel;
-                const double residualNorm = cv::norm(residual);
-                if (residualNorm > m_twoClickResidualClampPixels && residualNorm > 1e-12) {
-                    residual *= (m_twoClickResidualClampPixels / residualNorm);
-                }
-
-                const cv::Vec2d robustMeasured = predicted_delta_pixel + residual;
-                const double blend = std::clamp(m_twoClickUsePredictedBlend, 0.0, 1.0);
-                delta_pixel = (1.0 - blend) * robustMeasured + blend * predicted_delta_pixel;
-                hasValidDeltaPixel = (cv::norm(delta_pixel) > m_twoClickDeltaMinPixels);
-            }
-        } else {
-            // 单击模式沿用原有视觉反馈修正。
-            delta_pixel = cv::Vec2d(
-                sourcePixel.x - last_visual.x,
-                sourcePixel.y - last_visual.y
-                );
-            hasValidDeltaPixel = true;
-        }
-
-        if (hasValidDeltaPixel && cv::norm(delta_pixel) > 0.5) { // 统一兜底阈值（双击模式还会叠加最小位移阈值）
+        if (cv::norm(delta_pixel) > 0.5) { // 小于0.5像素就忽略
             online_samples.emplace_back(delta_pixel, last_delta_arm);
             if ((int)online_samples.size() > swls_window_size) {
                 online_samples.pop_front();
@@ -3733,13 +3700,14 @@ void Micromanipulator::triggerMicroArmMoveByPixels(const cv::Point2i &sourcePixe
         );
 
     // === ③ 保存本次参考，供下次更新使用 ===
-    last_visual = cv::Point2d(sourcePixel.x, sourcePixel.y);
-    last_delta_arm = delta_arm_cmd;
-    has_last_sample = true;
-    m_lastCommandFromTwoClickMode = isTwoClickCommand;
-    if (isTwoClickCommand) {
-        m_lastTwoClickTargetPixel = targetPixel;
-        m_hasLastTwoClickTargetPixel = true;
+    if (!isTwoClickCommand) {
+        // 单击模式：保留样本，供下一次单击执行在线修正。
+        last_visual = cv::Point2d(sourcePixel.x, sourcePixel.y);
+        last_delta_arm = delta_arm_cmd;
+        has_last_sample = true;
+    } else {
+        // 双击模式：不参与在线修正，避免污染单击修正样本。
+        has_last_sample = false;
     }
 }
 
@@ -3749,8 +3717,6 @@ void Micromanipulator::on_comboClickDriveMode_currentIndexChanged(int index)
                            ? ClickDriveMode::TwoClickDelta
                            : ClickDriveMode::TrackTipSingleClick;
     m_pendingTwoClickStart = false;
-    m_lastCommandFromTwoClickMode = false;
-    m_hasLastTwoClickTargetPixel = false;
     if (m_clickDriveMode == ClickDriveMode::TwoClickDelta) {
         ui->FeedBack->setText(QStringLiteral("双击模式：请先点击针尖起点，再点击终点"));
     } else {

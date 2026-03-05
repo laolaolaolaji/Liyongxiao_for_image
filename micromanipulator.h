@@ -318,12 +318,6 @@ public:
     ClickDriveMode m_clickDriveMode = ClickDriveMode::TrackTipSingleClick; ///< 点击驱动模式。
     bool m_pendingTwoClickStart = false; ///< 双击模式下是否已记录首点、等待第二次点击。
     cv::Point2i m_twoClickStartPixel = cv::Point2i(0, 0); ///< 双击模式首点（起始针尖像素）。
-    cv::Point2i m_lastTwoClickTargetPixel = cv::Point2i(0, 0); ///< 上一次双击模式的终点像素（k次目标）。
-    bool m_hasLastTwoClickTargetPixel = false; ///< 是否已记录上一次双击终点像素。
-    bool m_lastCommandFromTwoClickMode = false; ///< 上一次驱动命令是否来自双击模式。
-    double m_twoClickDeltaMinPixels = 1.5; ///< 双击修正样本的最小像素阈值，抑制微小点选抖动。
-    double m_twoClickResidualClampPixels = 4.0; ///< 双击测量与预测不一致时的残差限幅（像素）。
-    double m_twoClickUsePredictedBlend = 0.35; ///< 双击样本融合时预测像素位移的权重[0,1]。
 
     double  alpha_calib_rad;  // 标定时的 RZ 角（弧度）
 
